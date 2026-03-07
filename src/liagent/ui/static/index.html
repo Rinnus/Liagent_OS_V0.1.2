@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiAgent</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --bg-msg: #141414;
+    --bg-user: #1a1a1a;
+    --bg-input: #111111;
+    --border: #222;
+    --text: #d4d4d4;
+    --text-dim: #666;
+    --text-bright: #f0f0f0;
+    --accent: #888;
+    --radius: 12px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ─── Header ─── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .logo {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    color: var(--text-bright);
+  }
+
+  .status {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .status span { display: flex; align-items: center; gap: 4px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #444; flex-shrink: 0; }
+  .dot.on { background: #8f8; }
+
+  .header-actions { display: flex; gap: 8px; }
+
+  .btn-icon {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: all 0.15s;
+  }
+  .btn-icon:hover { border-color: #444; color: var(--text); }
+
+  /* ─── Main Layout ─── */
+  #main-layout {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+
+  /* ─── Messages ─── */
+  #messages {
+    overflow-y: auto;
+    padding: 20px 24px;
+    scroll-behavior: smooth;
+  }
+
+  #messages::-webkit-scrollbar { width: 4px; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+  #run-panel {
+    border-left: 1px solid var(--border);
+    background: #0d0d0d;
+    overflow-y: auto;
+    padding: 14px 12px;
+  }
+  #run-panel::-webkit-scrollbar { width: 4px; }
+  #run-panel::-webkit-scrollbar-track { background: transparent; }
+  #run-panel::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+  .run-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .run-panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+  }
+  .run-panel-btn {
+    border: 1px solid var(--border);
+    background: #171717;
+    color: var(--text-dim);
+    font-size: 11px;
+    border-radius: 6px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  .run-panel-btn:hover { border-color: #444; color: var(--text); }
+  .run-panel-btn.on {
+    border-color: #2f5d82;
+    color: #9bbfdd;
+    background: #162230;
+  }
+  .run-summary {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-input);
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.55;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .run-summary .k { color: var(--text); }
+  .run-controls {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 7px;
+  }
+  .run-select, .run-input {
+    background: #141414;
+    border: 1px solid #272727;
+    color: #bcbcbc;
+    font-size: 11px;
+    border-radius: 6px;
+    padding: 4px 6px;
+    min-height: 27px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .run-select {
+    min-width: 100px;
+    flex: 1 1 110px;
+  }
+  .run-input {
+    min-width: 140px;
+    flex: 1 1 150px;
+  }
+  .run-controls-meta {
+    font-size: 10px;
+    color: #777;
+    margin-bottom: 6px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .run-block {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #101010;
+    padding: 8px 9px;
+    margin-bottom: 10px;
+  }
+  .run-block-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.9px;
+    color: #8f8f8f;
+    margin-bottom: 7px;
+  }
+  .timeline-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .timeline-item {
+    border: 1px solid #222;
+    border-radius: 8px;
+    background: #111;
+    padding: 8px 9px;
+    font-size: 11px;
+    color: #a9a9a9;
+    line-height: 1.45;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .timeline-item .h {
+    color: #d0d0d0;
+    margin-bottom: 2px;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .timeline-item .src { color: #7d94a8; }
+  .timeline-item .seq { color: #6a6a6a; }
+  .timeline-empty {
+    border: 1px dashed #2a2a2a;
+    border-radius: 8px;
+    color: #666;
+    font-size: 11px;
+    padding: 12px 10px;
+    text-align: center;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .agent-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .agent-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .agent-item {
+    border: 1px solid #262626;
+    border-radius: 7px;
+    background: #131313;
+    padding: 7px 8px;
+    font-size: 11px;
+    color: #aaaaaa;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    line-height: 1.45;
+    cursor: pointer;
+  }
+  .agent-item:hover { border-color: #3a3a3a; }
+  .agent-item.active {
+    border-color: #3b5c78;
+    background: #142131;
+  }
+  .agent-item .h {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: #d0d0d0;
+    margin-bottom: 2px;
+  }
+  .agent-item .s { color: #7f97ad; }
+  .agent-item .m { color: #7b7b7b; }
+  .agent-item .score { color: #8ac0d8; }
+  .agent-item .err { color: #d18888; }
+  .agent-drawer {
+    margin-top: 8px;
+    border: 1px solid #26333f;
+    border-radius: 8px;
+    background: #0f1822;
+    display: none;
+  }
+  .agent-drawer.open { display: block; }
+  .agent-drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 8px;
+    border-bottom: 1px solid #22303d;
+  }
+  .agent-drawer-title {
+    font-size: 11px;
+    color: #b9cfe1;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .agent-drawer-body {
+    padding: 8px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #b7c6d5;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .agent-empty, .artifact-empty {
+    color: #666;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    padding: 4px 1px;
+  }
+  .cost-body {
+    font-size: 11px;
+    color: #a6b39c;
+    line-height: 1.55;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .cost-body .k { color: #d4e0cc; }
+  .route-body {
+    font-size: 11px;
+    color: #9fb0bf;
+    line-height: 1.55;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .route-body .k { color: #d5e0ea; }
+  .run-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .run-history-item {
+    border: 1px solid #252525;
+    border-radius: 7px;
+    background: #121212;
+    padding: 6px 8px;
+    color: #a8a8a8;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  .run-history-item:hover { border-color: #3a3a3a; color: #c8c8c8; }
+  .run-history-item.active {
+    border-color: #37536a;
+    background: #14202a;
+    color: #d3e4f1;
+  }
+  .run-history-item .h {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 1px;
+  }
+  .run-history-item .m {
+    color: #7f7f7f;
+  }
+  .run-history-empty {
+    color: #666;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    padding: 4px 1px;
+  }
+  .artifact-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .artifact-item {
+    border: 1px solid #252525;
+    border-radius: 7px;
+    padding: 7px 8px;
+    background: #121212;
+    font-size: 11px;
+    color: #b2b2b2;
+    line-height: 1.45;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    cursor: pointer;
+  }
+  .artifact-item:hover { border-color: #3a3a3a; }
+  .artifact-item.active {
+    border-color: #3b5c78;
+    background: #142131;
+  }
+  .artifact-item .tag {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid #2f3f4d;
+    color: #7fa3c4;
+    font-size: 10px;
+    margin-right: 6px;
+    margin-bottom: 2px;
+  }
+  .artifact-item .src { color: #7d7d7d; margin-left: 3px; }
+  .artifact-item a {
+    color: #8db3d5;
+    text-decoration: none;
+  }
+  .artifact-item a:hover { text-decoration: underline; }
+  .artifact-drawer {
+    margin-top: 8px;
+    border: 1px solid #26333f;
+    border-radius: 8px;
+    background: #0f1822;
+    display: none;
+  }
+  .artifact-drawer.open { display: block; }
+  .artifact-drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 8px;
+    border-bottom: 1px solid #22303d;
+  }
+  .artifact-drawer-title {
+    font-size: 11px;
+    color: #b9cfe1;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .artifact-drawer-body {
+    padding: 8px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #b7c6d5;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 210px;
+    overflow-y: auto;
+  }
+
+  .msg {
+    max-width: 720px;
+    margin: 0 auto 16px;
+    display: flex;
+    gap: 12px;
+  }
+
+  .msg-avatar {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    flex-shrink: 0;
+    margin-top: 2px;
+    background: #1c1c1c;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+
+  .msg-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .msg-role {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .msg-text {
+    font-size: 14px;
+    line-height: 1.65;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .msg.assistant .msg-text { color: var(--text-bright); }
+
+  .msg-image {
+    max-width: 200px;
+    max-height: 150px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border);
+  }
+
+  .feedback-bar {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .msg.assistant:hover .feedback-bar,
+  .feedback-bar.visible { opacity: 1; }
+  .fb-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .fb-btn:hover { border-color: #555; color: var(--text); }
+  .fb-btn.active-up { border-color: #4a4; color: #6c6; background: rgba(68,170,68,0.1); }
+  .fb-btn.active-down { border-color: #a44; color: #c66; background: rgba(170,68,68,0.1); }
+  .fb-btn:disabled { cursor: default; opacity: 0.6; }
+
+  .confidence-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 4px;
+    line-height: 24px;
+  }
+  .confidence-high { background: rgba(68,170,68,0.15); color: #6c6; }
+  .confidence-medium { background: rgba(200,180,50,0.15); color: #cc3; }
+  .confidence-low { background: rgba(170,68,68,0.15); color: #c66; }
+
+  .tool-info {
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--bg-msg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin: 8px 0;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .think-block {
+    margin: 8px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .think-toggle {
+    display: block;
+    width: 100%;
+    background: var(--bg-msg);
+    border: none;
+    color: var(--text-dim);
+    font-size: 12px;
+    padding: 6px 12px;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+  }
+  .think-toggle:hover { color: var(--text); }
+  .think-content {
+    display: none;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--bg);
+    white-space: pre-wrap;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .think-block.open .think-content { display: block; }
+  .ctx-var-tag {
+    display: inline-block;
+    background: #1a2733;
+    color: #5b9bd5;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin: 2px 4px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    cursor: help;
+  }
+  .confirm-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .confirm-btn {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: #cfcfcf;
+    font-size: 12px;
+    border-radius: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+  }
+  .confirm-btn:hover { border-color: #555; color: #fff; }
+  .confirm-btn[disabled] { opacity: 0.5; cursor: default; }
+  .audit-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-input);
+    padding: 6px;
+  }
+  .audit-item {
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 1px solid #1d1d1d;
+    padding: 6px 4px;
+    line-height: 1.4;
+  }
+  .audit-item:last-child { border-bottom: 0; }
+  .audit-item .s {
+    color: var(--text);
+    margin-right: 6px;
+  }
+  .metrics-list {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-input);
+    padding: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+  .metrics-list .k {
+    color: var(--text);
+  }
+
+  /* ─── Image preview ─── */
+  #img-preview {
+    display: none;
+    max-width: 720px;
+    margin: 0 auto 8px;
+    padding: 8px 12px;
+    background: var(--bg-msg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    align-items: center;
+    gap: 8px;
+  }
+  #img-preview.active { display: flex; }
+  #img-preview img {
+    width: 48px; height: 48px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  #img-preview .remove-img {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 16px;
+    margin-left: auto;
+    padding: 4px 8px;
+  }
+  #img-preview .remove-img:hover { color: var(--text); }
+  #cam-preview {
+    display: none;
+    max-width: 720px;
+    margin: 0 auto 8px;
+    padding: 8px 12px;
+    background: var(--bg-msg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    align-items: center;
+    gap: 8px;
+  }
+  #cam-preview.active { display: flex; }
+  #cam-preview video {
+    width: 540px; height: 304px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #000;
+  }
+  .camera-btn.active { border-color: #666; color: var(--text-bright); }
+
+  /* ─── Input bar ─── */
+  #input-bar {
+    padding: 16px 24px 20px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .input-wrap {
+    max-width: 720px;
+    margin: 0 auto;
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+
+  #user-input {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-bright);
+    font-size: 14px;
+    padding: 12px 16px;
+    resize: none;
+    outline: none;
+    font-family: inherit;
+    min-height: 44px;
+    max-height: 160px;
+    line-height: 1.5;
+    transition: border-color 0.15s;
+  }
+  #user-input:focus { border-color: #444; }
+  #user-input::placeholder { color: #444; }
+
+  .send-btn, .mic-btn, .img-btn {
+    width: 44px; height: 44px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-dim);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .send-btn:hover, .mic-btn:hover, .img-btn:hover { border-color: #444; color: var(--text); }
+  .mic-btn.recording { border-color: #666; color: var(--text-bright); animation: pulse 1.5s infinite; }
+  .img-btn.has-image { border-color: #666; color: var(--text-bright); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  /* ─── Voice overlay ─── */
+  #voice-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.92);
+    z-index: 100;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+  }
+  #voice-overlay.active { display: flex; }
+
+  .voice-status {
+    font-size: 16px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+
+  .voice-wave {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    height: 40px;
+  }
+  .voice-wave .bar {
+    width: 3px;
+    background: #555;
+    border-radius: 2px;
+    transition: height 0.1s;
+  }
+  .voice-wave.active .bar { background: var(--text); }
+
+  .voice-text {
+    font-size: 14px;
+    color: var(--text);
+    max-width: 480px;
+    text-align: center;
+    min-height: 1.5em;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+
+  /* Voice overlay image preview */
+  .voice-img-preview {
+    display: none;
+    margin-bottom: 8px;
+  }
+  .voice-img-preview.active { display: block; }
+  .voice-img-preview img {
+    width: 64px; height: 64px;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  .voice-close {
+    position: absolute;
+    top: 20px; right: 24px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .voice-close:hover { color: var(--text); border-color: #444; }
+
+  /* Voice image button (bottom-left) */
+  .voice-img-btn {
+    position: absolute;
+    bottom: 32px; left: 32px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 44px; height: 44px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .voice-img-btn:hover { color: var(--text); border-color: #444; }
+  .voice-img-btn.has-image { border-color: #666; color: var(--text-bright); }
+  .voice-cam-btn {
+    position: absolute;
+    bottom: 32px; left: 88px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 44px; height: 44px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .voice-cam-btn:hover { color: var(--text); border-color: #444; }
+  .voice-cam-btn.active { border-color: #666; color: var(--text-bright); }
+  .voice-cam-preview {
+    display: none;
+    position: absolute;
+    bottom: 94px;
+    left: 32px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #000;
+  }
+  .voice-cam-preview.active { display: block; }
+  .voice-cam-preview video {
+    width: 450px;
+    height: 252px;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* Responding state animation */
+  @keyframes softPulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+  }
+  .voice-wave.responding .bar {
+    background: #555;
+    animation: softPulse 2s ease-in-out infinite;
+  }
+
+  /* ─── Settings panel ─── */
+  #settings-panel {
+    display: none;
+    position: fixed;
+    right: 0; top: 0; bottom: 0;
+    width: 340px;
+    background: var(--bg);
+    border-left: 1px solid var(--border);
+    z-index: 50;
+    padding: 24px;
+    overflow-y: auto;
+  }
+  #settings-panel.open { display: block; }
+
+  .settings-title {
+    font-size: 13px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 20px;
+  }
+  .settings-feedback {
+    display: none;
+    font-size: 12px;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+    background: #131313;
+    color: var(--text);
+  }
+  .settings-feedback.ok {
+    display: block;
+    border-color: #2f6d44;
+    background: #122016;
+    color: #b8e2c5;
+  }
+  .settings-feedback.err {
+    display: block;
+    border-color: #6d3a3a;
+    background: #221414;
+    color: #f2c0c0;
+  }
+  .settings-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin: -10px 0 12px;
+    line-height: 1.4;
+  }
+
+  .setting-group { margin-bottom: 24px; }
+  .setting-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .setting-input, .setting-select {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 13px;
+    padding: 8px 12px;
+    outline: none;
+    font-family: inherit;
+    margin-bottom: 8px;
+  }
+  .setting-input:focus, .setting-select:focus { border-color: #444; }
+  .setting-select { appearance: none; cursor: pointer; }
+
+  .btn-apply {
+    background: #1a1a1a;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 4px;
+  }
+  .btn-apply:hover { border-color: #444; }
+
+  svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ─── MCP Server cards ─── */
+  .mcp-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .mcp-card.disabled { opacity: 0.5; }
+  .mcp-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .mcp-card-name { font-size: 13px; font-weight: 500; color: var(--text); }
+  .mcp-card-actions { display: flex; gap: 8px; align-items: center; }
+  .mcp-toggle {
+    width: 36px; height: 20px;
+    background: #333; border-radius: 10px;
+    position: relative; cursor: pointer;
+    border: 1px solid var(--border);
+    transition: background 0.2s;
+  }
+  .mcp-toggle.on { background: #2a6; }
+  .mcp-toggle::after {
+    content: '';
+    position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    background: #fff; border-radius: 50%;
+    transition: left 0.2s;
+  }
+  .mcp-toggle.on::after { left: 18px; }
+  .mcp-remove { cursor: pointer; color: var(--text-dim); font-size: 16px; line-height: 1; }
+  .mcp-remove:hover { color: #f55; }
+  .mcp-field { margin-bottom: 6px; }
+  .mcp-field label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .mcp-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+  .mcp-badge {
+    font-size: 10px; padding: 2px 6px;
+    border-radius: 4px; border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .mcp-env-row { display: flex; gap: 4px; margin-bottom: 4px; align-items: center; }
+  .mcp-env-row .setting-input { margin-bottom: 0; }
+  .mcp-env-remove { cursor: pointer; color: var(--text-dim); font-size: 14px; }
+  .mcp-env-remove:hover { color: #f55; }
+  .mcp-add-env { font-size: 11px; color: var(--text-dim); cursor: pointer; margin-top: 2px; }
+  .mcp-add-env:hover { color: var(--text); }
+  .mcp-inline { display: flex; gap: 8px; align-items: center; }
+  .mcp-inline label { min-width: auto; margin-bottom: 0; font-size: 11px; color: var(--text-dim); }
+  .mcp-inline input[type="checkbox"] { accent-color: #666; }
+
+  @media (max-width: 1100px) {
+    #main-layout {
+      grid-template-columns: 1fr;
+    }
+    #run-panel {
+      border-left: none;
+      border-top: 1px solid var(--border);
+      max-height: 220px;
+    }
+  }
+
+  @media (max-width: 768px) {
+    #main-layout {
+      grid-template-columns: 1fr;
+    }
+    #run-panel {
+      display: none;
+    }
+    .input-wrap {
+      padding: 6px 8px;
+    }
+    #messages {
+      padding: 8px;
+    }
+    .msg {
+      max-width: 100%;
+    }
+  }
+
+  /* ─── Color utility classes ─── */
+  .clr-muted { color: #8a8a8a; }
+  .clr-info { color: #8ea0ad; }
+  .clr-accent { color: #7e8f9f; }
+  .clr-success { color: #7fbf7f; }
+  .clr-warn { color: #c96; }
+  .clr-error { color: #a66; }
+  .clr-dim { color: #555; }
+  .clr-tool { color: #6f8c7b; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">LIAGENT</div>
+  <div class="status">
+    <span><span class="dot on" id="dot-llm"></span><span id="status-llm">loading...</span></span>
+    <span><span class="dot" id="dot-tts"></span><span id="status-tts">--</span></span>
+    <span><span class="dot" id="dot-stt"></span><span id="status-stt">--</span></span>
+    <span><span class="dot" id="dot-run"></span><span id="status-run">idle</span></span>
+  </div>
+  <div class="header-actions">
+    <button class="btn-icon" id="btn-tts" title="TTS Toggle">
+      <svg viewBox="0 0 24 24"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.08"/></svg>
+    </button>
+    <button class="btn-icon" id="btn-clear" title="Clear">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M5 6l1 14h12l1-14M10 11v6M14 11v6"/></svg>
+    </button>
+    <button class="btn-icon" id="btn-settings" title="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- Main Layout -->
+<main id="main-layout">
+  <div id="messages"></div>
+  <aside id="run-panel">
+    <div class="run-panel-head">
+      <div class="run-panel-title" id="run-panel-title">run timeline</div>
+      <button class="run-panel-btn on" id="run-panel-live">live</button>
+      <button class="run-panel-btn" id="run-panel-clear">clear</button>
+    </div>
+    <div class="run-summary" id="run-summary">no run events yet</div>
+    <div class="run-block">
+      <div class="run-block-title">run history</div>
+      <div class="run-history-list" id="run-history-list"></div>
+      <div class="run-history-empty" id="run-history-empty">no runs yet</div>
+    </div>
+    <div class="run-block">
+      <div class="run-block-title">routing trace</div>
+      <div class="route-body" id="run-route-body">waiting for route decisions...</div>
+    </div>
+    <div class="run-block">
+      <div class="run-block-title">agent board</div>
+      <div class="agent-controls">
+        <div class="run-controls-meta" id="agent-filter-meta">latest sub-agent snapshots</div>
+        <button class="run-panel-btn" id="run-agent-close">close</button>
+      </div>
+      <div class="agent-list" id="run-agent-list"></div>
+      <div class="agent-empty" id="run-agent-empty">no agent events yet</div>
+      <div class="agent-drawer" id="run-agent-drawer">
+        <div class="agent-drawer-head">
+          <div class="agent-drawer-title" id="run-agent-title">agent</div>
+          <button class="run-panel-btn" id="run-agent-drawer-close">close</button>
+        </div>
+        <div class="agent-drawer-body" id="run-agent-body"></div>
+      </div>
+    </div>
+    <div class="run-block">
+      <div class="run-block-title">cost & cache</div>
+      <div class="cost-body" id="run-cost-body">waiting for llm usage...</div>
+    </div>
+    <div class="run-block">
+      <div class="run-block-title">artifacts</div>
+      <div class="run-controls">
+        <select class="run-select" id="artifact-kind-filter">
+          <option value="">kind: all</option>
+        </select>
+        <select class="run-select" id="artifact-source-filter">
+          <option value="">source: all</option>
+        </select>
+        <input class="run-input" id="artifact-text-filter" placeholder="search artifacts">
+        <button class="run-panel-btn" id="artifact-export-btn">export</button>
+      </div>
+      <div class="run-controls-meta" id="artifact-filter-meta">showing all artifacts</div>
+      <div class="artifact-list" id="run-artifact-list"></div>
+      <div class="artifact-empty" id="run-artifact-empty">no evidence yet</div>
+      <div class="artifact-drawer" id="run-artifact-drawer">
+        <div class="artifact-drawer-head">
+          <div class="artifact-drawer-title" id="run-artifact-title">artifact</div>
+          <button class="run-panel-btn" id="run-artifact-close">close</button>
+        </div>
+        <div class="artifact-drawer-body" id="run-artifact-body"></div>
+      </div>
+    </div>
+    <div class="run-block">
+      <div class="run-block-title">timeline</div>
+      <div class="run-controls">
+        <select class="run-select" id="timeline-source-filter">
+          <option value="">source: all</option>
+        </select>
+        <select class="run-select" id="timeline-event-filter">
+          <option value="">event: all</option>
+        </select>
+      </div>
+      <div class="run-controls-meta" id="timeline-filter-meta">showing all events</div>
+      <div class="timeline-list" id="run-timeline-list"></div>
+      <div class="timeline-empty" id="run-timeline-empty">waiting for event envelope...</div>
+    </div>
+  </aside>
+</main>
+
+<!-- Input -->
+<div id="input-bar">
+  <div id="cam-preview">
+    <video id="cam-video" autoplay muted playsinline></video>
+    <span style="font-size:12px;color:var(--text-dim)">camera active</span>
+    <button class="remove-img" id="cam-stop-btn">&times;</button>
+  </div>
+  <div id="img-preview">
+    <img id="img-preview-thumb" src="" alt="preview">
+    <span style="font-size:12px;color:var(--text-dim)">image attached</span>
+    <button class="remove-img" id="remove-img-btn">&times;</button>
+  </div>
+  <div class="input-wrap">
+    <textarea id="user-input" rows="1" placeholder="Type a message..." autofocus></textarea>
+    <input type="file" id="img-file-input" accept="image/*" style="display:none">
+    <button class="img-btn" id="img-btn" title="Attach Image">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+    </button>
+    <button class="img-btn camera-btn" id="camera-btn" title="Camera Vision">
+      <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2-2h6l2 2h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+    </button>
+    <button class="mic-btn" id="mic-btn" title="Voice">
+      <svg viewBox="0 0 24 24"><rect x="9" y="1" width="6" height="11" rx="3"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </button>
+    <button class="send-btn" id="send-btn" title="Send">
+      <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- Voice overlay -->
+<div id="voice-overlay">
+  <button class="voice-close" id="voice-close-btn">&times;</button>
+  <div class="voice-cam-preview" id="voice-cam-preview"><video id="voice-cam-video" autoplay muted playsinline></video></div>
+  <div class="voice-img-preview" id="voice-img-preview"><img id="voice-img-thumb" src="" alt=""></div>
+  <div class="voice-wave" id="voice-wave"></div>
+  <div class="voice-status" id="voice-status">listening</div>
+  <div class="voice-text" id="voice-text"></div>
+  <button class="voice-img-btn" id="voice-img-btn" title="Attach Image">
+    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+  </button>
+  <button class="voice-cam-btn" id="voice-cam-btn" title="Camera Vision">
+    <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2-2h6l2 2h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+  </button>
+</div>
+
+<!-- Settings panel -->
+<aside id="settings-panel">
+  <div class="settings-title">Settings</div>
+  <div id="settings-feedback" class="settings-feedback"></div>
+  <div class="settings-hint">API mode tip: leave API key empty to keep the stored key.</div>
+
+  <div class="setting-group">
+    <div class="setting-label">Quick Setup</div>
+    <button class="btn-apply" id="apply-api-only">Switch To API-Only</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">Runtime & Sandbox</div>
+    <select class="setting-select" id="runtime-mode">
+      <option value="local_private">local_private</option>
+      <option value="hybrid_balanced">hybrid_balanced</option>
+      <option value="cloud_performance">cloud_performance</option>
+    </select>
+    <select class="setting-select" id="repl-mode">
+      <option value="off">repl off</option>
+      <option value="sandboxed">repl sandboxed</option>
+      <option value="trusted_local">repl trusted_local</option>
+    </select>
+    <select class="setting-select" id="sandbox-mode">
+      <option value="off">sandbox off</option>
+      <option value="non_main">sandbox non_main</option>
+      <option value="all">sandbox all</option>
+    </select>
+    <input class="setting-input" id="sandbox-image" placeholder="Sandbox image (for example liagent-sandbox:latest)">
+    <div style="display:flex;gap:8px">
+      <input class="setting-input" id="budget-soft-tokens" placeholder="soft tokens">
+      <input class="setting-input" id="budget-hard-tokens" placeholder="hard tokens">
+    </div>
+    <div style="display:flex;gap:8px">
+      <input class="setting-input" id="budget-soft-usd" placeholder="soft USD">
+      <input class="setting-input" id="budget-hard-usd" placeholder="hard USD">
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <span style="font-size:12px;color:var(--text)">MCP auto-discovery</span>
+      <div class="mcp-toggle" id="toggle-mcp-discovery"></div>
+    </div>
+    <input class="setting-input" id="mcp-hot-reload-sec" placeholder="MCP hot reload seconds">
+    <button class="btn-apply" id="apply-runtime">Apply</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">LLM Engine</div>
+    <select class="setting-select" id="llm-backend">
+      <option value="local">Local</option>
+      <option value="api">API</option>
+    </select>
+    <input class="setting-input" id="llm-path" placeholder="Model path">
+    <select class="setting-select" id="llm-provider" style="display:none">
+      <option value="openai">OpenAI</option>
+      <option value="gemini">Gemini (OpenAI-compatible)</option>
+      <option value="deepseek">DeepSeek</option>
+      <option value="moonshot">Moonshot (Kimi)</option>
+      <option value="openrouter">OpenRouter</option>
+      <option value="ollama">Ollama (local API)</option>
+      <option value="custom">Custom</option>
+    </select>
+    <input class="setting-input" id="llm-api-url" placeholder="API Base URL" style="display:none">
+    <input class="setting-input" id="llm-api-key" placeholder="API Key" type="password" style="display:none">
+    <input class="setting-input" id="llm-api-model" placeholder="Model name" style="display:none">
+    <select class="setting-select" id="llm-model-family" style="display:none">
+      <option value="openai">openai</option>
+      <option value="deepseek">deepseek</option>
+      <option value="llama">llama</option>
+      <option value="qwen3-vl">qwen3-vl</option>
+      <option value="gemini">gemini</option>
+      <option value="claude">claude</option>
+      <option value="glm47">glm47</option>
+    </select>
+    <select class="setting-select" id="llm-cache-mode" style="display:none">
+      <option value="implicit">Prompt Cache: Implicit</option>
+      <option value="explicit">Prompt Cache: Explicit</option>
+      <option value="off">Prompt Cache: Off</option>
+    </select>
+    <input class="setting-input" id="llm-cache-ttl" placeholder="Cache TTL seconds (explicit mode)" style="display:none">
+    <button class="btn-apply" id="apply-llm">Apply</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">TTS Engine</div>
+    <select class="setting-select" id="tts-backend">
+      <option value="local">Local</option>
+      <option value="api">API</option>
+    </select>
+    <input class="setting-input" id="tts-path" placeholder="Model path (Qwen3-TTS-Base)">
+    <input class="setting-input" id="tts-language" placeholder="Language (zh/en/ja/fr/es/it/pt/hi)">
+    <select class="setting-input" id="tts-speaker-name">
+      <option value="serena">Serena (Chinese Female)</option>
+      <option value="vivian">Vivian (Chinese Female)</option>
+      <option value="uncle_fu">Uncle Fu (Chinese Male)</option>
+      <option value="ryan">Ryan (English Male)</option>
+      <option value="aiden">Aiden (English Male)</option>
+      <option value="ono_anna">Ono Anna (Japanese Female)</option>
+      <option value="sohee">Sohee (Korean Female)</option>
+      <option value="eric">Eric (Sichuan Dialect)</option>
+      <option value="dylan">Dylan (Beijing Dialect)</option>
+    </select>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="font-size:12px;color:var(--text-dim);white-space:nowrap">SPEED</span>
+      <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.05" value="1.0"
+        style="flex:1;accent-color:#666">
+      <span id="tts-speed-val" style="font-size:12px;color:var(--text-dim);min-width:32px">1.00</span>
+    </div>
+    <div style="display:flex;gap:8px">
+      <select class="setting-select" id="tts-chunk-strategy" style="margin-bottom:8px">
+        <option value="smart_chunk">smart_chunk</option>
+        <option value="oneshot">oneshot</option>
+      </select>
+      <input class="setting-input" id="tts-max-chars" placeholder="max_chunk_chars" style="margin-bottom:8px">
+    </div>
+    <input class="setting-input" id="tts-api-url" placeholder="API Base URL" style="display:none">
+    <input class="setting-input" id="tts-api-key" placeholder="API Key" type="password" style="display:none">
+    <input class="setting-input" id="tts-api-model" placeholder="Model name" style="display:none">
+    <input class="setting-input" id="tts-api-voice" placeholder="Voice" style="display:none">
+    <button class="btn-apply" id="apply-tts">Apply</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">STT Engine</div>
+    <select class="setting-select" id="stt-backend">
+      <option value="local">Local</option>
+      <option value="api">API</option>
+    </select>
+    <input class="setting-input" id="stt-model" placeholder="STT model path">
+    <input class="setting-input" id="stt-language" placeholder="Language (auto/chinese/english)">
+    <input class="setting-input" id="stt-api-url" placeholder="API Base URL" style="display:none">
+    <input class="setting-input" id="stt-api-key" placeholder="API Key" type="password" style="display:none">
+    <input class="setting-input" id="stt-api-model" placeholder="Model name" style="display:none">
+    <button class="btn-apply" id="apply-stt">Apply</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">Tool Policy</div>
+    <select class="setting-select" id="tool-profile">
+      <option value="minimal">minimal</option>
+      <option value="research">research</option>
+      <option value="full">full</option>
+    </select>
+    <button class="btn-apply" id="apply-tool-policy">Apply</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">Thinking</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <span style="font-size:12px;color:var(--text)">Show thinking process</span>
+      <div class="mcp-toggle" id="toggle-show-thinking" title="Display model's reasoning chain in chat"></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:12px;color:var(--text)">Enable thinking chain</span>
+      <div class="mcp-toggle on" id="toggle-enable-thinking" title="Generate &lt;think&gt; reasoning (off = low latency)"></div>
+    </div>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">MCP Servers</div>
+    <div id="mcp-server-list"></div>
+    <button class="btn-apply" id="add-mcp-server">+ Add Server</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">Policy Audit</div>
+    <button class="btn-apply" id="refresh-audit">Refresh Audit</button>
+    <div class="audit-list" id="policy-audit-list"></div>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">Weekly Metrics</div>
+    <button class="btn-apply" id="refresh-metrics">Refresh Metrics</button>
+    <div class="metrics-list" id="weekly-metrics">loading...</div>
+  </div>
+</aside>
+
+<script type="module" src="/static/js/main.js"></script>
+
+</body>
+</html>

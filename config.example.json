@@ -1,0 +1,109 @@
+{
+  "config_version": 3,
+  "runtime_mode": "hybrid_balanced",
+  "llm": {
+    "backend": "local",
+    "model_family": "glm47",
+    "tool_protocol": "auto",
+    "local_model_path": "/path/to/liagent-models/Qwen3-VL-4B-Instruct-MLX-4bit",
+    "api_base_url": "",
+    "api_key": "",
+    "api_model": "",
+    "api_cache_mode": "implicit",
+    "api_cache_policy": "tiered",
+    "api_cache_ttl_sec": 600,
+    "api_cache_ttl_static_sec": 3600,
+    "api_cache_ttl_memory_sec": 900,
+    "api_cache_min_prefix_chars": 400,
+    "max_tokens": 2048,
+    "temperature": 0.3
+  },
+  "tts": {
+    "backend": "local",
+    "tts_engine": "qwen3",
+    "local_model_path": "/path/to/liagent-models/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+    "language": "zh",
+    "voice": "default",
+    "speed": 1.0,
+    "speaker_name": "serena",
+    "temperature": 0.5,
+    "top_k": 20,
+    "top_p": 0.88,
+    "repetition_penalty": 1.05,
+    "voice_profile": "base_default",
+    "speaker": "default",
+    "chunk_strategy": "smart_chunk",
+    "max_chunk_chars": 220,
+    "ref_audio": "",
+    "ref_text": "",
+    "api_base_url": "",
+    "api_key": "",
+    "api_model": "",
+    "api_voice": "alloy"
+  },
+  "stt": {
+    "backend": "local",
+    "model": "/path/to/liagent-models/Qwen3-ASR-0.6B-4bit",
+    "language": "auto",
+    "api_base_url": "",
+    "api_key": "",
+    "api_model": ""
+  },
+  "mcp_servers": [
+    {
+      "name": "playwright",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--headless", "--isolated"],
+      "risk_level": "high",
+      "network_access": true,
+      "filesystem_access": false,
+      "enabled": false
+    }
+  ],
+  "tasks": {
+    "enabled": true,
+    "cwork_dir": "/path/to/cwork",
+    "max_concurrent_tasks": 1,
+    "default_priority": 10,
+    "default_max_retries": 2
+  },
+  "routing": {
+    "enabled": true,
+    "long_context_local_soft_tokens": 6000,
+    "long_context_local_hard_tokens": 12000,
+    "private_cloud_override": false,
+    "code_delegate_enabled": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "mode": "off",
+    "image": "liagent-sandbox:latest",
+    "network_default": "off",
+    "docker_bin": "docker",
+    "workspace_mount": "/path/to/cwork",
+    "cpu_limit": 1.5,
+    "memory_limit_mb": 1024,
+    "pids_limit": 256
+  },
+  "budget": {
+    "session_soft_tokens": 60000,
+    "session_hard_tokens": 120000,
+    "session_soft_usd": 1.5,
+    "session_hard_usd": 3.0
+  },
+  "mcp_discovery": {
+    "enabled": false,
+    "dirs": [
+      "~/.liagent/mcp.d",
+      "~/.config/modelcontextprotocol"
+    ],
+    "hot_reload_sec": 120,
+    "tool_timeout_sec": 30.0,
+    "max_response_bytes": 1000000
+  },
+  "tool_profile": "full",
+  "tts_enabled": false,
+  "voice_mode": false,
+  "show_thinking": true,
+  "enable_thinking": true
+}

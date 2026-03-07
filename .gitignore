@@ -1,0 +1,38 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+src/liagent.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS / editor
+.DS_Store
+.vscode/
+src/.vscode/
+.idea/
+
+# Local secrets / config
+.env
+.env.*
+!.env.example
+config.json
+
+# Local runtime state
+.liagent/
+liagent.db
+*.db
+*.sqlite
+*.sqlite3
+*.log
+_public_release/

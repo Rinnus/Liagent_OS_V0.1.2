@@ -1,0 +1,53 @@
+name: Docs / onboarding feedback
+description: Report confusing setup steps, unclear docs, or first-run friction
+title: "[Docs]: "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when the docs were unclear, incomplete, or did not match the actual product behavior.
+  - type: dropdown
+    id: doc_area
+    attributes:
+      label: Which doc or path was unclear?
+      options:
+        - README.md landing page
+        - README(EN).md
+        - docs/getting-started.md
+        - docs/current-limitations.md
+        - CONTRIBUTING.md
+        - SUPPORT.md
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: confusion
+    attributes:
+      label: What was confusing?
+      description: Describe the exact step, sentence, or expectation gap.
+      placeholder: I followed step 3 and expected ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What would have helped?
+      description: What wording, example, screenshot, or note would have made this easier?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Add OS, Python version, runtime mode, and anything else that shaped the confusion.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I included the exact doc or step that caused friction.
+          required: true
+        - label: I removed secrets and personal data from the report.
+          required: true

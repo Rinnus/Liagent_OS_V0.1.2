@@ -1,0 +1,60 @@
+[project]
+name = "liagent"
+version = "0.1.2"
+description = "LiAgent OS: local-first AI agent OS for building a private personal assistant with governed autonomy"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+keywords = ["agent", "llm", "orchestration", "local-first", "tool-use"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "mlx>=0.25",
+    "mlx-lm",
+    "mlx-vlm>=0.3",
+    "mlx-audio>=0.3",
+    "transformers",
+    "misaki[zh]>=0.9.4",
+    "jieba",
+    "sounddevice",
+    "soundfile",
+    "numpy",
+    "Pillow",
+    "rich",
+    "httpx",
+    "ddgs",
+    "fastapi",
+    "uvicorn",
+    "openai",
+    "python-dotenv",
+    "croniter>=2.0",
+    "watchdog>=4.0",
+    "PyYAML>=6.0",
+    "pdfplumber>=0.10",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "flake8>=7.0"]
+mcp = ["mcp>=1.0"]
+browser = ["playwright>=1.40"]
+discord = ["py-cord[voice]>=2.6", "websockets>=12.0"]
+
+[project.scripts]
+liagent = "liagent.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [".git", ".venv", "venv", "_public_release", "manual"]
