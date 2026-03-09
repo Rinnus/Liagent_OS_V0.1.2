@@ -158,6 +158,9 @@ function buildTimelineDetail(data) {
   if (!data || typeof data !== 'object') return '';
   if (data.type === 'tool_start') return (data.name || '-') + ' start';
   if (data.type === 'tool_result') return (data.name || '-') + ' done';
+  if (data.type === 'tool_error') return (data.name || '-') + ' error';
+  if (data.type === 'tool_fallback') return (data.requested_name || '-') + ' -> ' + (data.effective_name || '-');
+  if (data.type === 'tool_skip') return (data.name || '-') + ' skipped';
   if (data.type === 'error') return String(data.text || 'error').slice(0, 80);
   if (data.type === 'sub_complete') {
     if (data.data && typeof data.data === 'object') {
@@ -245,6 +248,7 @@ function updateRunAggregates(bucket, data, eventType, entry) {
     agent.events += 1;
     if (eventType === 'tool_start') agent.toolStarts += 1;
     if (eventType === 'tool_result') agent.toolResults += 1;
+    if (eventType === 'tool_error') agent.errors += 1;
     if (eventType === 'sub_complete' || data.type === 'sub_complete') agent.completed += 1;
     if (eventType === 'error' || data.type === 'error') agent.errors += 1;
     agent.lastEvent = eventType || data.type || '-';
@@ -365,7 +369,7 @@ function updateRunAggregates(bucket, data, eventType, entry) {
 
   if (data.type === 'tool_result') {
     var toolName = String(data.name || 'tool');
-    var resultText = String(data.result || '');
+    var resultText = String(data.full_result || data.result || '');
     addArtifact(bucket, {
       kind: 'tool_result',
       source: toolName,
@@ -381,6 +385,15 @@ function updateRunAggregates(bucket, data, eventType, entry) {
         url: urls[i],
       });
     }
+  }
+
+  if (data.type === 'tool_error') {
+    addArtifact(bucket, {
+      kind: 'tool_error',
+      source: String(data.name || 'tool'),
+      text: String(data.error || ''),
+      url: '',
+    });
   }
 
   if (data.type === 'synthesis') {

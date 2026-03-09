@@ -6,9 +6,9 @@ LiAgent OS is not just pursuing a better agent runtime in the abstract. The long
 
 ## Current release posture
 
-The recommended public baseline is **`v0.1.2 (alpha)`**.
+The public repository is currently published as a rolling source snapshot rather than a packaged versioned release.
 
-That label is reasonable because:
+That posture is reasonable because:
 
 - the runtime already supports real interaction, tools, task execution, and governance loops
 - the project is still pre-1.0 and makes no claim of API or workflow stability

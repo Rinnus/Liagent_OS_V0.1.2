@@ -70,7 +70,18 @@ LiAgent OS is already beyond the toy-demo stage, but it is not pretending to be 
 
 In one sentence: **LiAgent OS already has real runtime capability, and the next phase is about turning that capability into a more private, secure, local-model-first foundation for a serious personal AI agent.**
 
-Current public baseline: **`v0.1.2` (alpha)**.
+## Latest public update
+
+This public update focuses on making LiAgent OS more observable, more consistent, and more reliable during long-running agent workflows.
+
+### What's improved
+
+- Clearer runtime visibility, status updates, and execution feedback
+- More consistent cancellation and runtime-state handling
+- Better transparency across tool execution and fallback paths
+- Stronger recovery behavior for interrupted and preempted runs
+- Unified runtime-status behavior across Web and Discord
+- Improved stability for longer multi-step task chains
 
 ## Current boundaries
 

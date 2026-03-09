@@ -1,7 +1,7 @@
 [project]
 name = "liagent"
-version = "0.1.2"
-description = "LiAgent OS: local-first AI agent OS for building a private personal assistant with governed autonomy"
+version = "0.1.0"
+description = "Local intelligent agent powered by MLX"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -57,4 +57,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = [".git", ".venv", "venv", "_public_release", "manual"]
+norecursedirs = [".git", ".venv", "venv", "_public_release"]

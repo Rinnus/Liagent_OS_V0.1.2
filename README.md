@@ -30,7 +30,6 @@ The long-term goal is bigger than a chat assistant: LiAgent OS is being built to
 - Human approval and auditability for risky actions.
 - One runtime across CLI, Web, and Discord.
 - Local-first by design, with hybrid local-cloud model services as a first-class path.
-- Public alpha baseline: `v0.1.2`.
 
 ## Current Value
 
@@ -38,6 +37,19 @@ The long-term goal is bigger than a chat assistant: LiAgent OS is being built to
 - It treats budget, permissions, approvals, and audit logs as runtime concerns.
 - It is built for local models first and keeps improving the hybrid path across local and cloud model services.
 - It is aiming toward a trusted personal AI agent, not just a smarter chat box.
+
+## Latest Public Update
+
+This public update focuses on making LiAgent OS more observable, more consistent, and more reliable during long-running agent workflows.
+
+### What's improved
+
+- Clearer runtime visibility, status updates, and execution feedback.
+- More consistent cancellation and runtime-state handling.
+- Better transparency across tool execution and fallback paths.
+- Stronger recovery behavior for interrupted and preempted runs.
+- Unified runtime-status behavior across Web and Discord.
+- Improved stability for longer multi-step task chains.
 
 ## Current Stage
 

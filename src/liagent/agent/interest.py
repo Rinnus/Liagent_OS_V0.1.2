@@ -461,7 +461,7 @@ def _frequency_to_seconds(freq: str) -> int:
 # ── LLM Factor Generation ──────────────────────────────────────────────────
 
 _FACTOR_SYSTEM_PROMPT = """\
-You are a factor analyst for a personal monitoring system.
+You are a factor analyst for a monitored-system workflow.
 Given the user's monitoring request, decompose it into observable factors
 that can be periodically polled from data sources.
 

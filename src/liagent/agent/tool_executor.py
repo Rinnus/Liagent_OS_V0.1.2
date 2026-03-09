@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import contextmanager
 
 
 def build_tool_degrade_observation(tool_name: str, tool_args: dict, err_text: str) -> str:
@@ -130,8 +131,48 @@ class ToolExecutor:
         self.retry_count = retry_count
         self.timeout_sec = timeout_sec
         self.relation_graph = relation_graph  # ToolRelationGraph | None
+        self._active_cancel_scope = None
 
-    async def execute(self, tool_def, tool_args: dict) -> tuple[str, bool, str]:
+    @contextmanager
+    def use_cancel_scope(self, cancel_scope):
+        previous = self._active_cancel_scope
+        self._active_cancel_scope = cancel_scope
+        try:
+            yield self
+        finally:
+            self._active_cancel_scope = previous
+
+    async def _await_tool_call(self, awaitable, *, timeout_sec: float, cancel_scope=None):
+        scope = cancel_scope if cancel_scope is not None else self._active_cancel_scope
+        if scope is None:
+            return await asyncio.wait_for(awaitable, timeout=timeout_sec)
+
+        scope.raise_if_cancelled()
+        tool_task = asyncio.create_task(awaitable)
+        cancel_task = asyncio.create_task(scope.wait_requested())
+        timeout_task = asyncio.create_task(asyncio.sleep(timeout_sec))
+        try:
+            done, _ = await asyncio.wait(
+                {tool_task, cancel_task, timeout_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if tool_task in done:
+                return await tool_task
+            if cancel_task in done:
+                tool_task.cancel()
+                await asyncio.gather(tool_task, return_exceptions=True)
+                scope.raise_if_cancelled()
+                raise asyncio.CancelledError(await cancel_task)
+            tool_task.cancel()
+            await asyncio.gather(tool_task, return_exceptions=True)
+            raise asyncio.TimeoutError()
+        finally:
+            for pending in (cancel_task, timeout_task):
+                if not pending.done():
+                    pending.cancel()
+            await asyncio.gather(cancel_task, timeout_task, return_exceptions=True)
+
+    async def execute(self, tool_def, tool_args: dict, *, cancel_scope=None) -> tuple[str, bool, str]:
         """Execute tool, returning (observation, is_error, error_type)."""
         last_err = ""
         err_type = "exception"
@@ -141,12 +182,18 @@ class ToolExecutor:
         # E3-2: latency-aware timeout
         effective_timeout = _effective_timeout(tool_def, self.timeout_sec)
         for _ in range(max_attempts):
+            scope = cancel_scope if cancel_scope is not None else self._active_cancel_scope
+            if scope is not None:
+                scope.raise_if_cancelled()
             try:
-                result = await asyncio.wait_for(
+                result = await self._await_tool_call(
                     tool_def.func(**tool_args),
-                    timeout=effective_timeout,
+                    timeout_sec=effective_timeout,
+                    cancel_scope=scope,
                 )
                 return self.tool_policy.sanitize_output(tool_def, result), False, ""
+            except asyncio.CancelledError:
+                raise
             except asyncio.TimeoutError:
                 last_err = f"Tool execution timed out (>{effective_timeout:.0f}s)"
                 err_type = "timeout"
@@ -158,13 +205,13 @@ class ToolExecutor:
         return f"[Tool execution error] {last_err}", True, kind
 
     async def execute_with_fallback(
-        self, tool_def, tool_args: dict, *, get_tool_fn=None,
+        self, tool_def, tool_args: dict, *, get_tool_fn=None, cancel_scope=None,
     ) -> tuple[str, bool, str, str, dict]:
         """Execute tool with fallback chain.
 
         Returns (observation, is_error, error_type, effective_tool_name, effective_args).
         """
-        obs, is_err, err_type = await self.execute(tool_def, tool_args)
+        obs, is_err, err_type = await self.execute(tool_def, tool_args, cancel_scope=cancel_scope)
         if not is_err:
             return obs, False, "", tool_def.name, tool_args
 
@@ -190,7 +237,9 @@ class ToolExecutor:
                             and transformed_args == tool_args):
                         continue
                     if rel.allow_same_args or transformed_args != tool_args:
-                        obs2, is_err2, err_type2 = await self.execute(tool_def, transformed_args)
+                        obs2, is_err2, err_type2 = await self.execute(
+                            tool_def, transformed_args, cancel_scope=cancel_scope,
+                        )
                         if is_err2:
                             last_err_type = err_type2
                         if not is_err2:
@@ -198,7 +247,9 @@ class ToolExecutor:
                 elif get_tool_fn:
                     fallback_def = get_tool_fn(rel.target)
                     if fallback_def:
-                        obs2, is_err2, err_type2 = await self.execute(fallback_def, transformed_args)
+                        obs2, is_err2, err_type2 = await self.execute(
+                            fallback_def, transformed_args, cancel_scope=cancel_scope,
+                        )
                         if is_err2:
                             last_err_type = err_type2
                         if not is_err2:
@@ -212,7 +263,9 @@ class ToolExecutor:
                     args_fn = strategy[1]
                     refined_args = args_fn(tool_args)
                     if refined_args != tool_args:
-                        obs2, is_err2, err_type2 = await self.execute(tool_def, refined_args)
+                        obs2, is_err2, err_type2 = await self.execute(
+                            tool_def, refined_args, cancel_scope=cancel_scope,
+                        )
                         if is_err2:
                             last_err_type = err_type2
                         if not is_err2:
@@ -223,11 +276,12 @@ class ToolExecutor:
                     fallback_def = get_tool_fn(fallback_name)
                     if fallback_def:
                         fallback_args = args_fn(tool_args)
-                        obs2, is_err2, err_type2 = await self.execute(fallback_def, fallback_args)
+                        obs2, is_err2, err_type2 = await self.execute(
+                            fallback_def, fallback_args, cancel_scope=cancel_scope,
+                        )
                         if is_err2:
                             last_err_type = err_type2
                         if not is_err2:
                             return obs2, False, "", fallback_name, fallback_args
 
         return obs, True, last_err_type, tool_def.name, tool_args
-

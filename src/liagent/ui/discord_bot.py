@@ -13,9 +13,12 @@ import io
 import json
 import mimetypes
 import os
+import re
 import struct
 import subprocess
 import tempfile
+import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -40,12 +43,105 @@ except ImportError:
     )
 
 from ..logging import get_logger
+from .runtime_status import (
+    RuntimeStatusSnapshot,
+    apply_ws_message_to_runtime_status as _apply_runtime_ws_message,
+    build_status_signature as _build_runtime_status_signature,
+    ensure_runtime_status_snapshot as _ensure_runtime_status_snapshot,
+    format_busy_message as _shared_format_busy_message,
+    format_running_status_message as _shared_format_running_status_message,
+    should_push_runtime_status as _should_push_runtime_status,
+)
 
 _log = get_logger("discord_bot")
 
 _AUDIO_EXTS = (".ogg", ".mp3", ".wav", ".m4a")
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff")
 _CONFIRM_TIMEOUT = 120  # seconds before confirmation buttons expire
+_RUNNING_STATUS_RE = re.compile(
+    r"^(?:\?+|then\??|status|continue|what now\??|then what\??|"
+    r"any update\??|still waiting\??|are you there\??|how long\??)\s*$",
+    re.IGNORECASE,
+)
+_CANCEL_REQUEST_RE = re.compile(
+    r"^(?:stop|cancel|abort|nevermind)\s*$",
+    re.IGNORECASE,
+)
+_DISCORD_STATUS_PUSH_POLL_SEC = max(
+    0.5,
+    float(os.environ.get("LIAGENT_DISCORD_STATUS_PUSH_POLL_SEC", "2.0")),
+)
+_DISCORD_STATUS_PUSH_AFTER_SEC = max(
+    0.0,
+    float(os.environ.get("LIAGENT_DISCORD_STATUS_PUSH_AFTER_SEC", "8.0")),
+)
+_DISCORD_STATUS_PUSH_IDLE_FLOOR_SEC = max(
+    0.0,
+    float(os.environ.get("LIAGENT_DISCORD_STATUS_PUSH_IDLE_FLOOR_SEC", "6.0")),
+)
+_DISCORD_STATUS_PUSH_REPEAT_SEC = max(
+    1.0,
+    float(os.environ.get("LIAGENT_DISCORD_STATUS_PUSH_REPEAT_SEC", "12.0")),
+)
+
+
+def _is_running_status_followup(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if _RUNNING_STATUS_RE.match(value):
+        return True
+    return len(value) <= 24 and value.lower() in {"?", "then?", "status", "continue"}
+
+
+def _is_cancel_request(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    return _CANCEL_REQUEST_RE.match(value) is not None
+
+
+def _format_status_wait(seconds: float) -> str:
+    try:
+        secs = max(0, int(round(float(seconds or 0.0))))
+    except Exception:
+        secs = 0
+    if secs <= 1:
+        return "less than 1 second"
+    if secs < 60:
+        return f"about {secs} seconds"
+    mins, rem = divmod(secs, 60)
+    if mins < 60:
+        if rem < 5:
+            return f"about {mins} minutes"
+        return f"about {mins} minutes {rem} seconds"
+    hours, mins = divmod(mins, 60)
+    if mins == 0:
+        return f"about {hours} hours"
+    return f"about {hours} hours {mins} minutes"
+
+
+def _format_status_tool(tool_name: str, tool_args: dict[str, Any] | None = None) -> str:
+    name = str(tool_name or "").strip() or "unknown"
+    args = tool_args if isinstance(tool_args, dict) else {}
+    if not args:
+        return f"`{name}`"
+    parts: list[str] = []
+    for key, value in list(args.items())[:3]:
+        rendered = str(value)
+        if len(rendered) > 48:
+            rendered = rendered[:45] + "..."
+        parts.append(f"{key}={rendered}")
+    return f"`{name}({', '.join(parts)})`"
+
+
+def _format_running_status_message(status: RuntimeStatusSnapshot | dict[str, Any] | None) -> str:
+    return _shared_format_running_status_message(status)
+
+
+def _format_busy_message(status: RuntimeStatusSnapshot | dict[str, Any] | None) -> str:
+    msg = _shared_format_busy_message(status)
+    return msg.replace("cancel control", "`/cancel`")
 
 
 def _is_audio_attachment(content_type: str | None, filename: str | None) -> bool:
@@ -539,6 +635,8 @@ class _ConfirmationView(discord.ui.View):
     async def on_timeout(self):
         for child in self.children:
             child.disabled = True
+        if self.result is None:
+            self.result = {"status": "timeout", "message": "Confirmation timed out."}
         self._done.set()
 
 
@@ -765,6 +863,8 @@ class _SecondConfirmView(discord.ui.View):
     async def on_timeout(self):
         for child in self.children:
             child.disabled = True
+        if self.result is None:
+            self.result = {"status": "timeout", "message": "Confirmation timed out."}
         self._done.set()
 
 
@@ -790,6 +890,58 @@ class LiAgentBot(commands.Bot):
         self._vision_cache: dict | None = None  # SHA1 dedup cache for images
         self._known_session_keys: set[str] = set()
         self._session_channels: dict[str, int] = {}
+        self._active_session_runs: dict[str, RuntimeStatusSnapshot] = {}
+        self._cancelled_sessions: set[str] = set()
+
+    def _set_active_session_run(self, session_key: str | None, **updates: Any) -> None:
+        key = str(session_key or "").strip()
+        if not key:
+            return
+        state = self._active_session_runs.get(key)
+        if state is None:
+            state = RuntimeStatusSnapshot(
+                started_at=time.time(),
+                updated_at=time.time(),
+            )
+            self._active_session_runs[key] = state
+        else:
+            state = _ensure_runtime_status_snapshot(state)
+            self._active_session_runs[key] = state
+        state.apply(**updates)
+
+    def _clear_active_session_run(self, session_key: str | None) -> None:
+        key = str(session_key or "").strip()
+        if key:
+            self._active_session_runs.pop(key, None)
+
+    def _get_active_session_run(self, session_key: str | None) -> RuntimeStatusSnapshot | dict[str, Any] | None:
+        key = str(session_key or "").strip()
+        if not key:
+            return None
+        state = self._active_session_runs.get(key)
+        if state is None:
+            return None
+        snapshot = _ensure_runtime_status_snapshot(state)
+        self._active_session_runs[key] = snapshot
+        return snapshot.clone()
+
+    async def _cancel_active_session_run(self, session_key: str | None) -> bool:
+        key = str(session_key or "").strip()
+        if not key:
+            return False
+        if key not in self._active_session_runs:
+            return False
+        self._cancelled_sessions.add(key)
+        self._clear_active_session_run(key)
+        ws = self._ws
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            if self._ws is ws:
+                self._ws = None
+        return True
 
     def _remember_session_key(self, session_key: str | None) -> str | None:
         key = str(session_key or "").strip()
@@ -805,6 +957,53 @@ class LiAgentBot(commands.Bot):
                     loop.create_task(self._sync_push_session_subscriptions())
             return key
         return None
+
+    async def _session_status_push_loop(self, session_key: str | None, channel) -> None:
+        key = str(session_key or "").strip()
+        if not key or channel is None:
+            return
+        last_signature = ""
+        while True:
+            await asyncio.sleep(_DISCORD_STATUS_PUSH_POLL_SEC)
+            status = self._active_session_runs.get(key)
+            if not status:
+                return
+            status = _ensure_runtime_status_snapshot(status)
+            self._active_session_runs[key] = status
+            state = str(status.get("state") or "").strip()
+            if state in {"done", "error", "cancelled"}:
+                return
+            now_ts = time.time()
+            if not _should_push_runtime_status(
+                status,
+                now=now_ts,
+                after_sec=_DISCORD_STATUS_PUSH_AFTER_SEC,
+                idle_floor_sec=_DISCORD_STATUS_PUSH_IDLE_FLOOR_SEC,
+                repeat_sec=_DISCORD_STATUS_PUSH_REPEAT_SEC,
+            ):
+                continue
+            signature = _build_runtime_status_signature(status)
+            if signature == last_signature:
+                continue
+            last_signature = signature
+            status["last_status_push_at"] = now_ts
+            try:
+                await channel.send(f"Status update: {_format_running_status_message(status)}")
+            except Exception:
+                return
+
+    async def _send_with_status_push(self, channel, payload: dict, *, session_key: str | None = None) -> list[dict]:
+        status_task: asyncio.Task | None = None
+        key = str(session_key or "").strip()
+        try:
+            if key and channel is not None:
+                status_task = asyncio.create_task(self._session_status_push_loop(key, channel))
+            return await self.send_to_liagent(payload)
+        finally:
+            if status_task is not None:
+                status_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await status_task
 
     async def _sync_push_session_subscriptions(self) -> None:
         ws = self._push_ws
@@ -938,36 +1137,76 @@ class LiAgentBot(commands.Bot):
         The lock is held for the entire send+receive cycle so that a
         concurrent caller cannot interleave messages on the same socket.
         """
-        self._remember_session_key(payload.get("session_key"))
-        async with self._response_lock:
-            async with self._ws_lock:
-                await self._ensure_ws()
-                await self._ws.send(json.dumps(payload))
+        session_key = self._remember_session_key(payload.get("session_key"))
+        payload_type = str(payload.get("type") or "").strip()
+        track_progress = payload_type in ("text", "audio") and bool(session_key)
+        if track_progress:
+            query = str(payload.get("text") or "").strip()
+            if payload_type == "audio" and not query:
+                query = "(voice input)"
+            self._set_active_session_run(
+                session_key,
+                query=query,
+                started_at=time.time(),
+                state="accepted",
+                tool_name="",
+                tool_args={},
+                confirmation_pending=False,
+                confirmation_tool="",
+                confirmation_reason="",
+            )
+        try:
+            async with self._response_lock:
+                async with self._ws_lock:
+                    await self._ensure_ws()
+                    await self._ws.send(json.dumps(payload))
 
-                events: list[dict] = []
-                while True:
-                    try:
-                        raw = await asyncio.wait_for(self._ws.recv(), timeout=120)
-                    except asyncio.TimeoutError:
-                        events.append({"type": "error", "text": "response timeout"})
-                        break
-                    except (ConnectionClosed, ConnectionError, OSError) as e:
-                        _log.warning("ws_disconnected", error=str(e))
-                        self._ws = None
-                        break
-                    try:
-                        msg = json.loads(raw)
-                    except (json.JSONDecodeError, TypeError):
-                        _log.warning("ws_malformed_json", raw_head=str(raw)[:120])
-                        continue
-                    events.append(msg)
-                    mtype = msg.get("type")
-                    if mtype in ("done", "error", "tts_done", "cleared", "tool_confirm_result", "finalized"):
-                        # For voice mode, wait for tts_done after done
-                        if mtype == "done" and msg.get("voice_pending"):
+                    events: list[dict] = []
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(self._ws.recv(), timeout=120)
+                        except asyncio.TimeoutError:
+                            events.append({"type": "error", "text": "response timeout"})
+                            if track_progress:
+                                self._set_active_session_run(session_key, state="error")
+                            break
+                        except (ConnectionClosed, ConnectionError, OSError) as e:
+                            _log.warning("ws_disconnected", error=str(e))
+                            self._ws = None
+                            if session_key and session_key in self._cancelled_sessions:
+                                events.append({"type": "cancelled", "text": "cancelled by user"})
+                                break
+                            if track_progress:
+                                self._set_active_session_run(session_key, state="error")
+                            break
+                        try:
+                            msg = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            _log.warning("ws_malformed_json", raw_head=str(raw)[:120])
                             continue
-                        break
-                return events
+                        events.append(msg)
+                        mtype = msg.get("type")
+                        if track_progress:
+                            current = self._active_session_runs.get(str(session_key or "").strip())
+                            if current is not None:
+                                _apply_runtime_ws_message(current, msg)
+                            if mtype in ("done", "error"):
+                                self._set_active_session_run(
+                                    session_key,
+                                    state=mtype,
+                                    confirmation_pending=False,
+                                )
+                        if mtype in ("done", "error", "tts_done", "cleared", "tool_confirm_result", "finalized"):
+                            # For voice mode, wait for tts_done after done
+                            if mtype == "done" and msg.get("voice_pending"):
+                                continue
+                            break
+                    return events
+        finally:
+            if session_key:
+                self._cancelled_sessions.discard(session_key)
+            if track_progress:
+                self._clear_active_session_run(session_key)
 
     # ── Event handlers ───────────────────────────────────────────────────
 
@@ -1077,6 +1316,21 @@ class LiAgentBot(commands.Bot):
         session_key: str | None = None,
     ):
         """Handle a text or text+image message — send to LiAgent and reply."""
+        active_run = self._get_active_session_run(session_key)
+        if active_run is not None:
+            if not image_data_url and _is_cancel_request(text):
+                cancelled = await self._cancel_active_session_run(session_key)
+                if cancelled:
+                    await message.reply("Cancellation requested for the active run. You can send a new request after it finishes stopping.")
+                else:
+                    await message.reply("There is no active run to cancel.")
+                return
+            if not image_data_url and _is_running_status_followup(text):
+                await message.reply(_format_running_status_message(active_run))
+                return
+            await message.reply(_format_busy_message(active_run))
+            return
+
         # Auto-set push channel so task results can be delivered
         if not self._push_channel_id:
             self._push_channel_id = message.channel.id
@@ -1087,7 +1341,13 @@ class LiAgentBot(commands.Bot):
                     payload["image"] = image_data_url
                 if session_key:
                     payload["session_key"] = session_key
-                events = await self.send_to_liagent(payload)
+                events = await self._send_with_status_push(
+                    message.channel,
+                    payload,
+                    session_key=session_key,
+                )
+                if any(str(ev.get("type") or "") == "cancelled" for ev in events):
+                    return
             except Exception as e:
                 await message.reply(f"Connection error: {e}")
                 self._ws = None
@@ -1118,13 +1378,18 @@ class LiAgentBot(commands.Bot):
                 print(f"  [voice-msg] converted to f32 ({len(f32_bytes)} bytes)")
 
                 # Send to LiAgent as audio
-                events = await self.send_to_liagent(
-                    {
-                        "type": "audio",
-                        "audio": audio_b64,
-                        "session_key": session_key,
-                    }
+                payload = {
+                    "type": "audio",
+                    "audio": audio_b64,
+                    "session_key": session_key,
+                }
+                events = await self._send_with_status_push(
+                    message.channel,
+                    payload,
+                    session_key=session_key,
                 )
+                if any(str(ev.get("type") or "") == "cancelled" for ev in events):
+                    return
             except Exception as e:
                 await message.reply(f"Voice message error: {e}")
                 return
@@ -1346,10 +1611,16 @@ class LiAgentBot(commands.Bot):
         task_name = result.get("task_name", "Unknown")
         status = result.get("status", "")
         text = result.get("result", "") or result.get("error", "")
+        if status == "success":
+            color = discord.Color.green()
+        elif status == "preempted":
+            color = discord.Color.orange()
+        else:
+            color = discord.Color.red()
 
         embed = discord.Embed(
             title=f"Task: {task_name}",
-            color=discord.Color.green() if status == "success" else discord.Color.red(),
+            color=color,
         )
         embed.add_field(name="Status", value=status, inline=True)
         embed.add_field(name="Run ID", value=result.get("run_id", ""), inline=True)
@@ -1478,6 +1749,25 @@ class LiAgentBot(commands.Bot):
                 await ctx.followup.send(f"Error: {e}")
             except Exception:
                 _log.error("cmd_clear_followup_failed", error=str(e))
+
+    async def _cmd_cancel(self, ctx: discord.ApplicationContext):
+        """Cancel the currently running Discord-scoped request."""
+        await ctx.defer(ephemeral=True)
+        session_key = self._session_key_for_ctx(ctx)
+        active_run = self._get_active_session_run(session_key)
+        if active_run is None:
+            await ctx.followup.send("There is no active run to cancel.", ephemeral=True)
+            return
+        cancelled = await self._cancel_active_session_run(session_key)
+        if not cancelled:
+            await ctx.followup.send("There is no active run to cancel.", ephemeral=True)
+            return
+        await ctx.followup.send(
+            "Cancellation requested for the active run. "
+            "If you only want progress next time, send 'status' or 'then?'. "
+            "If this is a new request, you can send it after the current run stops.",
+            ephemeral=True,
+        )
 
     def _api_base(self) -> str:
         return _get_api_base(self.ws_url)
@@ -1704,6 +1994,9 @@ class LiAgentBot(commands.Bot):
         self.slash_command(name="clear", description="Clear conversation memory")(
             self._cmd_clear
         )
+        self.slash_command(name="cancel", description="Cancel the current Discord task")(
+            self._cmd_cancel
+        )
 
         # /speaker with name parameter
         speaker_cmd = self.slash_command(
@@ -1830,7 +2123,7 @@ class LiAgentBot(commands.Bot):
         @watch_group.command(name="create", description="Start monitoring a topic")
         async def watch_create(
             ctx: discord.ApplicationContext,
-            query: discord.Option(str, description="What to monitor, e.g. 'Watch AAPL, cost basis 142'"),
+            query: discord.Option(str, description="What to monitor, e.g. 'Track an AAPL position with cost basis 142'"),
         ):
             await self._watch_create(ctx, query)
 

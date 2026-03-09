@@ -7,10 +7,12 @@ for quality checks on research synthesis output.
 from __future__ import annotations
 
 import uuid
+import inspect
 from collections.abc import AsyncIterator
 
 from ..agent.grounding_gate import GroundingGate
 from ..agent.policy_router import PolicyRouter
+from ..agent.run_control import RunCancellationScope
 from ..logging import get_logger
 from .events import AgentEvent, EventSequencer, make_event
 
@@ -42,6 +44,7 @@ class Orchestrator:
         images: list[str] | None = None,
         low_latency: bool = False,
         session_key: str | None = None,
+        cancel_scope: RunCancellationScope | None = None,
     ) -> AsyncIterator[AgentEvent]:
         run_id = str(uuid.uuid4())[:8]
         seq = EventSequencer()
@@ -59,10 +62,20 @@ class Orchestrator:
             source="brain", run_id=run_id, agent_id="brain", sequencer=seq,
         )
 
+        run_kwargs = {
+            "images": images,
+            "low_latency": low_latency,
+            "session_key": session_key,
+        }
+        try:
+            run_sig = inspect.signature(self.brain.run)
+            if "cancel_scope" in run_sig.parameters:
+                run_kwargs["cancel_scope"] = cancel_scope
+        except (TypeError, ValueError):
+            pass
+
         collected_answer = ""
-        async for legacy_event in self.brain.run(
-            query, images=images, low_latency=low_latency, session_key=session_key
-        ):
+        async for legacy_event in self.brain.run(query, **run_kwargs):
             evt_type = legacy_event[0]
             evt_payload = (
                 legacy_event[1]

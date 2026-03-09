@@ -251,6 +251,7 @@ async def evaluate_tool_policy(
             required_stage = (
                 2 if tool_def.risk_level == "high"
                 or getattr(tool_def.capability, "data_classification", "public") == "sensitive"
+                or "repl_mode=trusted_local" in reason
                 else 1
             )
             pending_confirmations[token] = {

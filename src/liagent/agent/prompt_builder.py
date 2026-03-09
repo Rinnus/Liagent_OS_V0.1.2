@@ -18,11 +18,14 @@ Match response depth to question complexity:
 
 ## Data Accuracy
 
-For real-time data (price, market, weather, news), call tools before answering.
+For real-time data (price, market, weather, news) and local machine status (CPU, memory, disk, load, temperature, latency), call tools before answering.
 Follow-up questions about real-time data require a fresh lookup.
 All concrete numbers must come from tool output.
+If exact data was not verified by a tool, explicitly say it is unverified; do not estimate or invent figures.
 Do not silently replace user-provided entities (for example, if user says AMD, keep AMD).
 Preserve source units and conversions unless the user explicitly asks for conversion.
+Never send progress-only filler such as "let me check" as a final answer. Either emit only the tool call, or answer with actual findings.
+If execution is waiting for confirmation, say so explicitly and do not pretend the task is still running.
 """
 
 _RULES_REASONING = """\
@@ -42,23 +45,6 @@ def _build_shared_rules(tier: str) -> str:
     if tier == "realtime_voice":
         return _RULES_CORE
     return _RULES_CORE + "\n" + _RULES_REASONING
-
-
-_SENSITIVE_PERSONAL_FACT_RE = re.compile(
-    r"\b(?:my name is|name is|preferred name|call me|nickname|go by|address me as|refer to me as|full name)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_prompt_safe_fact(fact: dict) -> bool:
-    """Allow general memory facts, but keep names and forms of address out of prompts."""
-    text = str(fact.get("fact", "") or "").strip()
-    if not text:
-        return False
-    category = str(fact.get("category", "") or "").strip().lower()
-    if category != "personal":
-        return True
-    return _SENSITIVE_PERSONAL_FACT_RE.search(text) is None
 
 
 # ── Tier-based memory injection config ─────────────────────────────────
@@ -121,6 +107,7 @@ Tool selection guide:
 - Describe/analyze image -> `describe_image`
 - Internet search -> `web_search` (refined English query)
 - Fetch page body -> `web_fetch` (for URLs from search)
+- Local machine/runtime status (CPU, memory, disk, load, temperature, latency) -> `system_status`
 {exec_tool_hints}
 Use this format when calling tools, one call at a time:
 <tool_call>{{"name": "tool_name", "args": {{"arg_name": "value"}}}}</tool_call>
@@ -156,6 +143,7 @@ Operational requests are only complete after calling the required tool.
 
 # ── Conditional tool hints (excluded under "research" profile) ──────────
 _EXEC_TOOL_HINTS = """\
+- Local machine/runtime status (CPU, memory, disk, load, temperature, latency) -> `system_status`
 - Execute code/compute/open file -> `python_exec`
 - Write file -> `write_file`"""
 
@@ -167,6 +155,8 @@ def _build_exec_tool_hints(available_tool_names: set[str] | None) -> tuple[str, 
     if available_tool_names is None:
         return _EXEC_TOOL_HINTS, _EXEC_TOOL_EXAMPLES
     hints: list[str] = []
+    if "system_status" in available_tool_names:
+        hints.append("- Local machine/runtime status (CPU, memory, disk, load, temperature, latency) -> `system_status`")
     if "python_exec" in available_tool_names:
         hints.append("- Execute code/compute/open file -> `python_exec`")
     if "write_file" in available_tool_names:
@@ -231,7 +221,8 @@ Classify requests before acting:
 2. Task management -> `list_tasks` / `delete_task` / `delete_all_tasks`
 3. Real-time data (price/weather/news/latest) -> `web_search` (English query), then `web_fetch` for source pages when needed
 4. File/code operations -> `write_file`; code execution -> `python_exec`
-5. Pure knowledge/chat -> direct answer
+5. Local machine/runtime status (CPU, memory, disk, load, temperature, latency) -> `system_status`
+6. Pure knowledge/chat -> direct answer
 
 When the user says "do X in N minutes", create a delayed task with `create_task` and do not run X immediately.
 {experience_constraint}
@@ -299,7 +290,7 @@ Extract key user facts from the conversation (for example location, preferences,
 
 Output JSON array where each item has:
 {{"fact": "fact text", "category": "category", "confidence": 0.0-1.0, "source": "llm_extract"}}
-Allowed categories: location, preference, work, personal, other
+Allowed categories: location, preference, work, reference, other
 
 If no facts are extractable, output []
 Output JSON only."""
@@ -388,19 +379,33 @@ class PromptBuilder:
             raw_facts = self.long_term.get_all_facts(min_confidence=min_conf)
             evidence_chunks = []
 
-        visible_facts = [f for f in raw_facts if _is_prompt_safe_fact(f)]
-        if len(visible_facts) != len(raw_facts):
-            evidence_chunks = []
-        raw_facts = visible_facts
+        def _allow_public_fact(fact: dict) -> bool:
+            category = str(fact.get("category") or "").strip().lower()
+            text = str(fact.get("fact") or "").strip().lower()
+            if category == "personal":
+                return False
+            blocked_markers = (
+                "preferred name",
+                "legal name",
+                "full name",
+                "phone number",
+                "email address",
+                "home address",
+                "date of birth",
+                "birthday",
+            )
+            return not any(marker in text for marker in blocked_markers)
+
+        safe_facts = [f for f in raw_facts if _allow_public_fact(f)]
 
         # Client-side confidence filter for tiers with different thresholds
-        facts = [f for f in raw_facts if f.get("confidence", 0.7) >= min_conf][:max_facts]
+        facts = [f for f in safe_facts if f.get("confidence", 0.7) >= min_conf][:max_facts]
         # TODO: move tier-specific logic to skills/router.py
         # For deep_task, also include lower-confidence facts with annotation
         low_conf_facts: list[dict] = []
         if tier == "deep_task" and min_conf < 0.65:
             low_conf_facts = [
-                f for f in raw_facts
+                f for f in safe_facts
                 if 0.50 <= f.get("confidence", 0.7) < 0.65
             ][:max_facts - len(facts)]
 

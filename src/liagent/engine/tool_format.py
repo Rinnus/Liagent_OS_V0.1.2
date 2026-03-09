@@ -171,6 +171,21 @@ _GLM47_RE = re.compile(
 _GLM47_ARG_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", re.DOTALL
 )
+_FUNCTION_CALLS_BLOCK_RE = re.compile(
+    r"<function_calls>\s*.*?</function_calls>", re.DOTALL | re.IGNORECASE
+)
+_INVOKE_RE = re.compile(
+    r"<invoke\s+name=[\"']?([A-Za-z_]\w*)[\"']?\s*>(.*?)</invoke>",
+    re.DOTALL | re.IGNORECASE,
+)
+_INVOKE_LENIENT_RE = re.compile(
+    r"<invoke\s+name=[\"']?([A-Za-z_]\w*)[\"']?\s*>(.*?)(?:</invoke>|</function_calls>|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+_NAMED_PARAMETER_RE = re.compile(
+    r"<parameter\s+name=[\"']?([A-Za-z_]\w*)[\"']?\s*>(.*?)</parameter>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def _extract_raw_json_call(text: str, *, strict: bool) -> tuple[str, str] | None:
@@ -267,6 +282,46 @@ class GLM47Format:
     def format_schemas(self, tools: list) -> list[dict]:
         """Return native tool schemas — GLM injects format via chat_template tools= parameter."""
         return tools
+
+
+class FunctionCallsInvokeFormat:
+    """Moonshot-style XML: <function_calls><invoke name=\"x\"><parameter name=\"k\">v</parameter></invoke></function_calls>."""
+
+    @staticmethod
+    def _parse_invoke(match: re.Match[str] | None) -> dict | None:
+        if match is None:
+            return None
+        name = str(match.group(1) or "").strip()
+        if not name:
+            return None
+        body = str(match.group(2) or "")
+        args: dict[str, str] = {}
+        for pm in _NAMED_PARAMETER_RE.finditer(body):
+            args[str(pm.group(1)).strip()] = str(pm.group(2)).strip()
+        return {"name": name, "args": args}
+
+    def parse(self, text: str) -> dict | None:
+        return self._parse_invoke(_INVOKE_RE.search(text))
+
+    def parse_lenient(self, text: str) -> dict | None:
+        parsed = self._parse_invoke(_INVOKE_RE.search(text))
+        if parsed is not None:
+            return parsed
+        return self._parse_invoke(_INVOKE_LENIENT_RE.search(text))
+
+    def strip(self, text: str) -> str:
+        text = _FUNCTION_CALLS_BLOCK_RE.sub("", text)
+        text = re.sub(
+            r"\s*<invoke\s+name=[\"']?[A-Za-z_]\w*[\"']?\s*>.*?</invoke>\s*",
+            "\n",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        text = re.sub(r"\n{2,}", "\n", text)
+        return text.strip()
+
+    def format_schemas(self, tools: list) -> str:
+        return json.dumps(tools, ensure_ascii=False, indent=2)
 
 
 class RawJsonCallFormat:
@@ -375,6 +430,7 @@ class CompositeFormat:
             JsonInXmlFormat(),
             GLM47Format(),
             Qwen3CoderFormat(),
+            FunctionCallsInvokeFormat(),
             RawJsonCallFormat(),
             RawKeywordCallFormat(),
         ]

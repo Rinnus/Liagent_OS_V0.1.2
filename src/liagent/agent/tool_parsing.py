@@ -18,6 +18,7 @@ TOOL_CALL_NATIVE_STRIP_RE = re.compile(
     r"<tool_call>\s*<function=\w+>.*?</function>\s*</tool_call>",
     re.DOTALL,
 )
+FUNCTION_CALLS_BLOCK_RE = re.compile(r"<function_calls>.*?</function_calls>", re.DOTALL | re.IGNORECASE)
 RAW_TOOL_CALL_PREFIX_RE = re.compile(r"^\s*[A-Za-z_]\w*\s*\(\s*(\{|[A-Za-z_]\w*\s*=)", re.DOTALL)
 RAW_TOOL_CALL_LINE_RE = re.compile(r"(^|\n)\s*[A-Za-z_]\w*\s*\(\s*(\{|[A-Za-z_]\w*\s*=)", re.DOTALL)
 
@@ -82,7 +83,11 @@ def strip_any_tool_call(text: str) -> str:
 
 def extract_tool_call_block(full_response: str) -> str | None:
     """Extract the raw tool_call XML block from a full response for memory storage."""
-    m = TOOL_CALL_BLOCK_RE.search(full_response) or TOOL_CALL_NATIVE_STRIP_RE.search(full_response)
+    m = (
+        TOOL_CALL_BLOCK_RE.search(full_response)
+        or TOOL_CALL_NATIVE_STRIP_RE.search(full_response)
+        or FUNCTION_CALLS_BLOCK_RE.search(full_response)
+    )
     if m:
         return m.group()
     stripped = full_response.strip()
@@ -96,7 +101,7 @@ def contains_tool_call_syntax(text: str) -> bool:
     """Detect likely tool-call syntax, including bare raw-call fallbacks."""
     if not text:
         return False
-    if "<tool_call>" in text or "<function=" in text:
+    if "<tool_call>" in text or "<function=" in text or "<function_calls" in text or "<invoke " in text:
         return True
     return bool(RAW_TOOL_CALL_LINE_RE.search(text))
 

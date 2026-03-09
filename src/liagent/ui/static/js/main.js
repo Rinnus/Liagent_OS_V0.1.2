@@ -20,6 +20,7 @@ import {
   toggleLLMFields, toggleTTSFields, toggleSTTFields,
   loadPolicyAudit, loadWeeklyMetrics,
   showAddMCPForm, sendMessage,
+  cancelCurrentRun,
 } from './renderers/settings-panel.js';
 import { toggleVoice, stopVoice } from './renderers/voice-overlay.js';
 import {
@@ -64,6 +65,7 @@ document.getElementById('artifact-export-btn').addEventListener('click', exportA
 
 // ─── Chat event bindings ───────────────────────────────────────────
 document.getElementById('send-btn').addEventListener('click', sendMessage);
+document.getElementById('cancel-btn').addEventListener('click', cancelCurrentRun);
 document.getElementById('btn-clear').addEventListener('click', clearChat);
 document.getElementById('user-input').addEventListener('keydown', function(e) {
   if (e.key === 'Enter' && !e.shiftKey) {

@@ -11,9 +11,10 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,16 @@ from .event_envelope import (
     _event_payload_tail,
     _extract_agent_event,
 )
+from .runtime_status import (
+    RuntimeStatusSnapshot,
+    apply_legacy_event_to_runtime_status as _apply_runtime_event,
+    format_running_status_message as _shared_format_running_status_message,
+    init_runtime_status as _init_runtime_status,
+    mark_runtime_cancel_requested as _mark_runtime_cancel_requested,
+    mark_runtime_status_pushed as _mark_runtime_status_pushed,
+    should_push_runtime_status as _should_push_runtime_status,
+    update_runtime_status as _update_runtime_status,
+)
 
 # ─── Route modules ──────────────────────────────────────────────────────────
 from .config_routes import router as _config_router
@@ -80,8 +91,73 @@ from .task_routes import router as _task_router, broadcast_task_result, _parse_a
 
 _TTS_BREAK_CHARS = ".!?;,\n"
 _SESSION_SUGGESTION_RESHOW_SEC = 300
+_RUNNING_STATUS_RE = re.compile(
+    r"^(?:\?+|then\??|status|continue|what now\??|then what\??|"
+    r"any update\??|still waiting\??|are you there\??|how long\??)\s*$",
+    re.IGNORECASE,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _is_running_status_followup(user_input: str) -> bool:
+    text = str(user_input or "").strip()
+    if not text:
+        return False
+    if _RUNNING_STATUS_RE.match(text):
+        return True
+    return len(text) <= 24 and text.lower() in {"?", "then?", "status", "continue"}
+
+
+def _format_status_tool(tool_name: str, tool_args: dict[str, Any] | None = None) -> str:
+    name = str(tool_name or "").strip() or "unknown"
+    args = tool_args if isinstance(tool_args, dict) else {}
+    if not args:
+        return f"`{name}`"
+    parts: list[str] = []
+    for key, value in list(args.items())[:3]:
+        rendered = str(value)
+        if len(rendered) > 48:
+            rendered = rendered[:45] + "..."
+        parts.append(f"{key}={rendered}")
+    return f"`{name}({', '.join(parts)})`"
+
+
+def _format_status_wait(seconds: float) -> str:
+    try:
+        secs = max(0, int(round(float(seconds or 0.0))))
+    except Exception:
+        secs = 0
+    if secs <= 1:
+        return "less than 1 second"
+    if secs < 60:
+        return f"about {secs} seconds"
+    mins, rem = divmod(secs, 60)
+    if mins < 60:
+        if rem < 5:
+            return f"about {mins} minutes"
+        return f"about {mins} minutes {rem} seconds"
+    hours, mins = divmod(mins, 60)
+    if mins == 0:
+        return f"about {hours} hours"
+    return f"about {hours} hours {mins} minutes"
+
+
+def _format_running_status_message(status: RuntimeStatusSnapshot | dict[str, Any] | None) -> str:
+    return _shared_format_running_status_message(status)
+
+
+def _build_tool_result_preview(result: Any, *, max_chars: int = 500) -> tuple[str, bool, int]:
+    text = str(result or "")
+    total_chars = len(text)
+    if total_chars <= max_chars:
+        return text, False, total_chars
+    preview = text[:max_chars].rstrip()
+    if preview:
+        preview += "\n...(tool result preview truncated)"
+    else:
+        preview = "...(tool result preview truncated)"
+    return preview, True, total_chars
 
 
 def _in_quiet_hours(brain: AgentBrain | None) -> bool:
@@ -554,7 +630,9 @@ async def _stream_events(
     voice_triggered: bool = False,
     images: list[str] | None = None,
     session_key: str | None = None,
+    cancel_scope=None,
     ws_lock: asyncio.Lock | None = None,
+    status_tracker: dict[str, Any] | None = None,
 ):
     """Stream brain events over WebSocket with low-latency incremental TTS."""
     _engine_ref = _shared._engine
@@ -585,6 +663,25 @@ async def _stream_events(
     max_chars = max(80, int(tts_cfg.max_chunk_chars))
     first_target = min(max_chars, max(40, int(os.environ.get("LIAGENT_TTS_FIRST_CHUNK_CHARS", "72"))))
     next_target = min(max_chars, max(72, int(os.environ.get("LIAGENT_TTS_STREAM_CHUNK_CHARS", "150"))))
+    status_push_after_sec = max(
+        0.05, float(os.environ.get("LIAGENT_WS_STATUS_PUSH_AFTER_SEC", "8.0"))
+    )
+    status_push_repeat_sec = max(
+        status_push_after_sec,
+        float(os.environ.get("LIAGENT_WS_STATUS_PUSH_REPEAT_SEC", "15.0")),
+    )
+    queue_wait_timeout_sec = max(
+        0.05, float(os.environ.get("LIAGENT_WS_QUEUE_WAIT_TIMEOUT_SEC", "120.0"))
+    )
+    status_idle_floor_sec = max(
+        0.05, float(os.environ.get("LIAGENT_WS_STATUS_IDLE_FLOOR_SEC", "5.0"))
+    )
+    status_tick_sec = max(
+        0.01, float(os.environ.get("LIAGENT_WS_STATUS_TICK_SEC", "1.0"))
+    )
+    run_lock_acquired = False
+    pending_event_task: asyncio.Task | None = None
+    pending_lock_task: asyncio.Task | None = None
 
     async def _send(msg: dict):
         payload = dict(msg)
@@ -598,6 +695,51 @@ async def _stream_events(
         except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
             # Client disconnected or task cancelled; stop stream immediately
             raise asyncio.CancelledError
+
+    async def _send_best_effort(msg: dict) -> bool:
+        payload = dict(msg)
+        payload.setdefault("run_id", run_id)
+        try:
+            await _send(payload)
+            return True
+        except (Exception, asyncio.CancelledError):
+            try:
+                if ws_lock:
+                    async with ws_lock:
+                        await ws.send_json(payload)
+                else:
+                    await ws.send_json(payload)
+                return True
+            except (Exception, asyncio.CancelledError):
+                return False
+
+    def _track_status(**updates: Any) -> None:
+        _update_runtime_status(status_tracker, **updates)
+
+    async def _maybe_send_auto_status(*, force: bool = False) -> None:
+        if status_tracker is None:
+            return
+        state = str(status_tracker.get("state") or status_tracker.get("phase") or "").strip()
+        if state in {"done", "error", "cancelled"}:
+            return
+        now = time.time()
+        if not force:
+            if not _should_push_runtime_status(
+                status_tracker,
+                now=now,
+                after_sec=status_push_after_sec,
+                idle_floor_sec=status_idle_floor_sec,
+                repeat_sec=status_push_repeat_sec,
+            ):
+                return
+        _mark_runtime_status_pushed(status_tracker, now=now)
+        await _send(
+            {
+                "type": "status_message",
+                "text": _format_running_status_message(status_tracker),
+                "run_state": state or "streaming",
+            }
+        )
 
     async def _send_audio_chunk(audio: np.ndarray):
         """Encode and send a single audio chunk over WebSocket."""
@@ -685,6 +827,7 @@ async def _stream_events(
 
     try:
         final_state = "accepted"
+        _track_status(state="accepted", phase="accepted", confirmation_pending=False)
         await _send({"type": "run_state", "state": "accepted"})
         if images:
             await _send({"type": "vision_input", "count": len(images)})
@@ -692,12 +835,32 @@ async def _stream_events(
             raise RuntimeError("run lock not initialized")
         queue_wait_started = time.perf_counter()
         final_state = "queued"
+        _track_status(state="queued", phase="queued")
         await _send({"type": "run_state", "state": "queued"})
         # Preempt any running background task before acquiring lock
         executor = getattr(app.state, "executor", None)
         if executor is not None:
             await executor.preempt()
-        async with _shared._BRAIN_RUN_LOCK:
+        pending_lock_task = asyncio.create_task(_shared._BRAIN_RUN_LOCK.acquire())
+        while True:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(pending_lock_task),
+                    timeout=status_tick_sec,
+                )
+                run_lock_acquired = True
+                pending_lock_task = None
+                break
+            except asyncio.TimeoutError:
+                if queue_wait_started is not None:
+                    queued_elapsed = time.perf_counter() - queue_wait_started
+                    if queued_elapsed >= queue_wait_timeout_sec:
+                        raise TimeoutError(
+                            f"brain queue wait timed out after {queue_wait_timeout_sec:.2f}s"
+                        )
+                await _maybe_send_auto_status()
+                continue
+        try:
             queued_ms = (
                 (time.perf_counter() - queue_wait_started) * 1000.0
                 if queue_wait_started is not None
@@ -705,20 +868,44 @@ async def _stream_events(
             )
             stream_started = time.perf_counter()
             final_state = "streaming"
+            _track_status(state="streaming", phase="streaming")
             await _send({"type": "run_state", "state": "streaming"})
         # Stream brain/orchestrator events
             if _shared._orchestrator is not None:
                 _event_source = _shared._orchestrator.dispatch(
-                    text, images=images, low_latency=voice_triggered, session_key=session_key
+                    text,
+                    images=images,
+                    low_latency=voice_triggered,
+                    session_key=session_key,
+                    cancel_scope=cancel_scope,
                 )
             else:
                 _event_source = brain.run(
-                    text, images=images, low_latency=voice_triggered, session_key=session_key
+                    text,
+                    images=images,
+                    low_latency=voice_triggered,
+                    session_key=session_key,
+                    cancel_scope=cancel_scope,
                 )
-            async for raw_event in _event_source:
+            event_iter = _event_source.__aiter__()
+            pending_event_task = asyncio.create_task(event_iter.__anext__())
+            while True:
+                try:
+                    raw_event = await asyncio.wait_for(
+                        asyncio.shield(pending_event_task),
+                        timeout=status_tick_sec,
+                    )
+                except asyncio.TimeoutError:
+                    await _maybe_send_auto_status()
+                    continue
+                except StopAsyncIteration:
+                    pending_event_task = None
+                    break
+                pending_event_task = asyncio.create_task(event_iter.__anext__())
                 event, event_meta = _extract_agent_event(raw_event)
                 etype = event[0]
                 if etype == "think":
+                    _track_status(state="streaming", phase="thinking")
                     await _send(
                         _attach_event_meta(
                             {"type": "think", "text": event[1]},
@@ -727,6 +914,7 @@ async def _stream_events(
                         )
                     )
                 elif etype == "token":
+                    _track_status(state="streaming", phase="streaming")
                     await _send(
                         _attach_event_meta(
                             {"type": "token", "text": event[1]},
@@ -751,6 +939,7 @@ async def _stream_events(
                         )
                         await _synthesize_and_send(bridge_text)
                 elif etype == "tool_start":
+                    _apply_runtime_event(status_tracker, etype, event[1], event[2])
                     await _send(
                         _attach_event_meta(
                             {
@@ -763,18 +952,73 @@ async def _stream_events(
                         )
                     )
                 elif etype == "tool_result":
+                    result_preview, result_truncated, total_chars = _build_tool_result_preview(
+                        event[2], max_chars=500,
+                    )
+                    _apply_runtime_event(status_tracker, etype, event[1], event[2])
                     await _send(
                         _attach_event_meta(
                             {
                                 "type": "tool_result",
                                 "name": event[1],
-                                "result": event[2][:500],
+                                "result": result_preview,
+                                "truncated": result_truncated,
+                                "total_chars": total_chars,
+                                "full_result": str(event[2] or "") if result_truncated else "",
+                            },
+                            event_type=etype,
+                            event_meta=event_meta,
+                        )
+                    )
+                elif etype == "tool_error":
+                    payload = event[2] if len(event) > 2 and isinstance(event[2], dict) else {}
+                    _apply_runtime_event(status_tracker, etype, event[1], payload)
+                    await _send(
+                        _attach_event_meta(
+                            {
+                                "type": "tool_error",
+                                "name": event[1],
+                                "args": payload.get("tool_args", {}),
+                                "error_type": payload.get("error_type", ""),
+                                "error": payload.get("message", ""),
+                            },
+                            event_type=etype,
+                            event_meta=event_meta,
+                        )
+                    )
+                elif etype == "tool_fallback":
+                    payload = event[3] if len(event) > 3 and isinstance(event[3], dict) else {}
+                    _apply_runtime_event(status_tracker, etype, event[1], event[2], payload)
+                    await _send(
+                        _attach_event_meta(
+                            {
+                                "type": "tool_fallback",
+                                "requested_name": event[1],
+                                "effective_name": event[2],
+                                "requested_args": payload.get("requested_args", {}),
+                                "effective_args": payload.get("effective_args", {}),
+                            },
+                            event_type=etype,
+                            event_meta=event_meta,
+                        )
+                    )
+                elif etype == "tool_skip":
+                    payload = event[3] if len(event) > 3 and isinstance(event[3], dict) else {}
+                    _apply_runtime_event(status_tracker, etype, event[1], event[2], payload)
+                    await _send(
+                        _attach_event_meta(
+                            {
+                                "type": "tool_skip",
+                                "name": event[1],
+                                "reason": event[2],
+                                "detail": payload,
                             },
                             event_type=etype,
                             event_meta=event_meta,
                         )
                     )
                 elif etype == "done":
+                    _track_status(state="done", phase="done", confirmation_pending=False)
                     final_text = event[1] or ""
                     if tts_enabled:
                         # Strip citation block from TTS — only read the main answer
@@ -805,6 +1049,7 @@ async def _stream_events(
                         )
                     )
                 elif etype == "error":
+                    _track_status(state="error", phase="error")
                     await _send(
                         _attach_event_meta(
                             {"type": "error", "text": event[1]},
@@ -884,6 +1129,8 @@ async def _stream_events(
                     )
                 elif etype == "confirmation_required":
                     brief = event[4] if len(event) > 4 else ""
+                    expires_at = event[5] if len(event) > 5 else ""
+                    _apply_runtime_event(status_tracker, etype, event[1], event[2], event[3])
                     await _send(
                         _attach_event_meta(
                             {
@@ -892,6 +1139,23 @@ async def _stream_events(
                                 "tool": event[2],
                                 "reason": event[3],
                                 "brief": brief,
+                                "expires_at": expires_at,
+                            },
+                            event_type=etype,
+                            event_meta=event_meta,
+                        )
+                    )
+                elif etype == "guard_retry":
+                    retry_reason = event[2] if len(event) > 2 else ""
+                    retry_text = event[1] if len(event) > 1 else "The previous reply needs one retry."
+                    _apply_runtime_event(status_tracker, etype, retry_text, retry_reason)
+                    await _send(
+                        _attach_event_meta(
+                            {
+                                "type": "status_message",
+                                "text": retry_text,
+                                "run_state": "guard_retry",
+                                "reason": retry_reason,
                             },
                             event_type=etype,
                             event_meta=event_meta,
@@ -934,6 +1198,10 @@ async def _stream_events(
                             event_meta=event_meta,
                         )
                     )
+        finally:
+            if run_lock_acquired and _shared._BRAIN_RUN_LOCK.locked():
+                _shared._BRAIN_RUN_LOCK.release()
+                run_lock_acquired = False
         if tts_enabled:
             await _drain_tts(force=True)
             if not tts_failed_reason and tts_chunks_emitted == 0 and (full_answer.strip() or pending_tts.strip()):
@@ -968,9 +1236,11 @@ async def _stream_events(
             }
         )
         final_state = "done"
+        _track_status(state="done", phase="done", confirmation_pending=False)
         await _send({"type": "run_state", "state": "done"})
     except asyncio.CancelledError:
         final_state = "cancelled"
+        _track_status(state="cancelled", phase="cancelled", confirmation_pending=False)
         try:
             await _send({"type": "run_state", "state": "cancelled"})
         except Exception:
@@ -979,12 +1249,26 @@ async def _stream_events(
         pass
     except Exception as e:
         final_state = "error"
-        await _send({"type": "error", "text": f"stream error: {e}"})
-        try:
-            await _send({"type": "run_state", "state": "error", "detail": str(e)})
-        except Exception:
-            pass
+        _track_status(state="error", phase="error", confirmation_pending=False)
+        await _send_best_effort({"type": "error", "text": f"stream error: {e}"})
+        await _send_best_effort({"type": "run_state", "state": "error", "detail": str(e)})
     finally:
+        if pending_lock_task is not None and not pending_lock_task.done():
+            pending_lock_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending_lock_task
+        if pending_event_task is not None and not pending_event_task.done():
+            pending_event_task.cancel()
+            with suppress(asyncio.CancelledError, StopAsyncIteration):
+                await pending_event_task
+        if run_lock_acquired and _shared._BRAIN_RUN_LOCK and _shared._BRAIN_RUN_LOCK.locked():
+            _shared._BRAIN_RUN_LOCK.release()
+        executor = getattr(app.state, "executor", None)
+        if executor is not None:
+            try:
+                await executor.resume_deferred_runs()
+            except Exception as e:
+                _log.error("web_server", e, action="resume_deferred_runs")
         for p in images or []:
             try:
                 path = Path(p)
@@ -1037,8 +1321,10 @@ async def ws_chat(ws: WebSocket):
             return
 
     current_task: asyncio.Task | None = None
+    current_cancel_scope = None
     background_tasks: set[asyncio.Task] = set()
     vision_cache: dict | None = None
+    current_run_status = RuntimeStatusSnapshot()
     client_id = (ws.client.host if ws.client else "local") or "local"
     chat_session_key: str | None = None
     cancel_wait_sec = max(
@@ -1051,6 +1337,7 @@ async def ws_chat(ws: WebSocket):
 
     async def _watch_stream_task(task: asyncio.Task):
         nonlocal current_task
+        nonlocal current_cancel_scope
         try:
             await task
         except asyncio.CancelledError:
@@ -1061,6 +1348,7 @@ async def ws_chat(ws: WebSocket):
         finally:
             if current_task is task:
                 current_task = None
+            current_cancel_scope = None
 
     def _launch_stream(
         prompt_text: str,
@@ -1071,6 +1359,16 @@ async def ws_chat(ws: WebSocket):
         session_key: str | None,
     ) -> None:
         nonlocal current_task
+        nonlocal current_cancel_scope
+        from ..agent.run_control import RunCancellationScope
+
+        _init_runtime_status(
+            current_run_status,
+            run_id=run_id,
+            query=prompt_text,
+            session_key=session_key,
+        )
+        current_cancel_scope = RunCancellationScope()
         task = asyncio.create_task(
             _stream_events(
                 ws,
@@ -1080,7 +1378,9 @@ async def ws_chat(ws: WebSocket):
                 voice_triggered=voice_triggered,
                 images=image_paths,
                 session_key=session_key,
+                cancel_scope=current_cancel_scope,
                 ws_lock=ws_lock,
+                status_tracker=current_run_status,
             )
         )
         current_task = task
@@ -1090,8 +1390,12 @@ async def ws_chat(ws: WebSocket):
 
     async def _cancel_current_stream(*, send_cancelled: bool = False) -> None:
         nonlocal current_task
+        nonlocal current_cancel_scope
         task = current_task
         if task and not task.done():
+            if current_cancel_scope is not None:
+                current_cancel_scope.cancel("user_cancelled")
+            _mark_runtime_cancel_requested(current_run_status, "user_cancelled")
             task.cancel()
             try:
                 await asyncio.wait_for(task, timeout=cancel_wait_sec)
@@ -1099,6 +1403,7 @@ async def ws_chat(ws: WebSocket):
                 pass
             if current_task is task:
                 current_task = None
+            current_cancel_scope = None
             if send_cancelled:
                 async with ws_lock:
                     await ws.send_json({"type": "run_state", "state": "cancelled"})
@@ -1143,14 +1448,32 @@ async def ws_chat(ws: WebSocket):
             if msg_type == "auth":
                 continue
 
-            # Always let a new user utterance preempt the current one.
-            if msg_type in ("text", "audio") and current_task and not current_task.done():
-                await _cancel_current_stream(send_cancelled=True)
-
             if msg_type == "text":
                 user_text = data.get("text", "").strip()
                 if not user_text:
                     continue
+                if (
+                    push_enabled
+                    and current_task
+                    and not current_task.done()
+                    and _is_running_status_followup(user_text)
+                ):
+                    async with ws_lock:
+                        await ws.send_json(
+                            {
+                                "type": "status_message",
+                                "text": _format_running_status_message(current_run_status),
+                                "run_id": str(current_run_status.get("run_id") or ""),
+                                "run_state": str(
+                                    current_run_status.get("state")
+                                    or current_run_status.get("phase")
+                                    or "streaming"
+                                ),
+                            }
+                        )
+                    continue
+                if current_task and not current_task.done():
+                    await _cancel_current_stream(send_cancelled=True)
                 session_key = _resolve_session_key(data.get("session_key"))
                 run_id = uuid.uuid4().hex[:10]
                 image_paths, image_note, cache_update = _resolve_image_paths(
@@ -1174,6 +1497,8 @@ async def ws_chat(ws: WebSocket):
 
             elif msg_type == "audio":
                 # Receive recorded audio for STT
+                if current_task and not current_task.done():
+                    await _cancel_current_stream(send_cancelled=True)
                 session_key = _resolve_session_key(data.get("session_key"))
                 try:
                     audio_b64 = data.get("audio", "")

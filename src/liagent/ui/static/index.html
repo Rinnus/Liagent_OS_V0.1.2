@@ -695,7 +695,7 @@
   #user-input:focus { border-color: #444; }
   #user-input::placeholder { color: #444; }
 
-  .send-btn, .mic-btn, .img-btn {
+  .send-btn, .mic-btn, .img-btn, .cancel-btn {
     width: 44px; height: 44px;
     border-radius: var(--radius);
     border: 1px solid var(--border);
@@ -708,9 +708,21 @@
     transition: all 0.15s;
     flex-shrink: 0;
   }
-  .send-btn:hover, .mic-btn:hover, .img-btn:hover { border-color: #444; color: var(--text); }
+  .send-btn:hover, .mic-btn:hover, .img-btn:hover, .cancel-btn:hover { border-color: #444; color: var(--text); }
   .mic-btn.recording { border-color: #666; color: var(--text-bright); animation: pulse 1.5s infinite; }
   .img-btn.has-image { border-color: #666; color: var(--text-bright); }
+  .cancel-btn {
+    border-color: #3a2323;
+    color: #9c6f6f;
+  }
+  .cancel-btn.active {
+    border-color: #7b3a3a;
+    color: #f0d0d0;
+  }
+  .cancel-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
   /* ─── Voice overlay ─── */
@@ -1159,6 +1171,9 @@
     </button>
     <button class="mic-btn" id="mic-btn" title="Voice">
       <svg viewBox="0 0 24 24"><rect x="9" y="1" width="6" height="11" rx="3"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </button>
+    <button class="cancel-btn" id="cancel-btn" title="Cancel current task" disabled>
+      <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" ry="2"/></svg>
     </button>
     <button class="send-btn" id="send-btn" title="Send">
       <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>

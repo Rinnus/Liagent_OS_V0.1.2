@@ -19,13 +19,14 @@ _MAX_PLAN_STEPS = 8
 
 # Heuristic patterns that suggest a request needs multi-step planning
 _MULTI_STEP_SIGNALS = re.compile(
-    r"(compare|contrast|then|after that|next|first.+then|and then|"
-    r"each|multiple|several|steps?|search.+summarize|find.+analy)",
+    r"(compare|contrast|then|after(?:ward)?|next|first.+then|and|also|"
+    r"each|multiple|several|steps?|search.+summarize|find.+analy(?:s|z)e|"
+    r"find.+compare)",
     re.IGNORECASE,
 )
 # Count entities: uppercase tickers (AAPL, TSLA), URLs, numeric codes
 # NO IGNORECASE — only match actual uppercase tickers to avoid false positives
-_ENTITY_COUNT_RE = re.compile(r"[A-Z]{2,5}(?=\s|,|$)|https?://\S+|\d{5,}")
+_ENTITY_COUNT_RE = re.compile(r"[A-Z]{2,5}(?=\s|,|;|$)|https?://\S+|\d{5,}")
 
 
 def _should_plan(query: str) -> bool:
@@ -112,7 +113,10 @@ def should_block_completion(steps: list[dict], plan_idx: int, plan_total: int) -
     pending_non_final = [s for s in non_final if s.get("status") == "pending"]
     if pending_non_final:
         titles = [s["title"] for s in pending_non_final]
-        return True, f"There are still {len(pending_non_final)} unfinished steps: {titles}. Continue with the next step and do not summarize yet."
+        return True, (
+            f"There are still {len(pending_non_final)} unfinished steps: {titles}. "
+            "Continue with the next step and do not summarize yet."
+        )
     return False, ""
 
 

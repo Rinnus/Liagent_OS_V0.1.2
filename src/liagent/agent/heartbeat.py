@@ -544,7 +544,7 @@ class HeartbeatRunner:
                             tool_name = cand.get("domain", "web_search")
                         if decision == "auto_create":
                             action_payload = {
-                                "prompt": f"Search for the latest information about {key}",
+                                "prompt": f"Search for the latest information on {key}",
                                 "tool": tool_name,
                                 "key": key,
                             }

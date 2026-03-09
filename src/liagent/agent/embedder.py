@@ -38,6 +38,7 @@ _EXACT_PATTERNS = [
 _SEMANTIC_INDICATORS = [
     "how", "what", "why", "explain", "configure", "setup",
     "describe", "discuss", "previously", "remember",
+    "earlier", "plan", "design",
 ]
 
 

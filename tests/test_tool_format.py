@@ -227,7 +227,7 @@ class FactoryTests(unittest.TestCase):
     def test_default_composite(self):
         c = get_default_composite()
         self.assertIsInstance(c, CompositeFormat)
-        self.assertEqual(len(c.parsers), 5)
+        self.assertEqual(len(c.parsers), 6)
 
     def test_protocol_parser_selection(self):
         p = get_parser_for_protocol("openai_function", model_family="deepseek")

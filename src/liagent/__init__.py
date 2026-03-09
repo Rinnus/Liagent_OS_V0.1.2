@@ -1,8 +1,8 @@
-"""LiAgent OS - Local-first agent runtime."""
+"""LiAgent - Local intelligent agent powered by MLX."""
 import os
 import warnings
 
-__version__ = "0.1.2"
+__version__ = "0.1.0"
 
 
 if os.environ.get("LIAGENT_SUPPRESS_RESOURCE_TRACKER_WARNING", "1").strip().lower() in {"1", "true", "yes"}:

@@ -40,6 +40,47 @@ def detect_copout(answer: str) -> bool:
     return False
 
 
+_PROGRESS_PLACEHOLDER_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:sorry[,，:：]?\s*)?(?:let me|i(?:'| wi)?ll|i need to|i'm going to)\s+(?:check|look|inspect|review|read|open|pull up|call|run|fetch)"
+    r"|i(?:'m| am)\s+(?:checking|looking|inspecting|reviewing|reading|opening|fetching)"
+    r")",
+    re.IGNORECASE,
+)
+
+_PROGRESS_PLACEHOLDER_HINTS = (
+    "let me check",
+    "let me look",
+    "let me inspect",
+    "let me review",
+    "let me call",
+    "let me run",
+    "i'm checking",
+    "i am checking",
+)
+
+
+def detect_progress_placeholder(answer: str) -> bool:
+    """Detect progress-only filler replies that should not be shown as final answers."""
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    compact = re.sub(r"\s+", " ", text)
+    lowered = compact.lower()
+    if len(compact) > 120:
+        return False
+    if not any(h in lowered or h in compact for h in _PROGRESS_PLACEHOLDER_HINTS):
+        return False
+    if _PROGRESS_PLACEHOLDER_PREFIX_RE.search(compact) is None:
+        return False
+    # If the answer already contains substantive findings, do not treat it as filler.
+    if re.search(r"\b(?:found|result|conclusion|observed)\b", compact, re.IGNORECASE):
+        return False
+    if _SPECIFIC_DATA_RE.search(compact):
+        return False
+    return True
+
+
 # Patterns where the model claims to have performed file/action operations.
 # Mapped to the tool(s) that MUST have been called for the claim to be valid.
 _ACTION_CLAIM_RULES: list[tuple[tuple[str, ...], set[str]]] = [
@@ -67,6 +108,45 @@ def detect_hallucinated_action(answer: str, tools_used: set[str]) -> str:
             if not (tools_used & required_tools):
                 return ", ".join(sorted(required_tools))
     return ""
+
+
+_TOOL_FAILURE_CLAIM_RE = re.compile(
+    r"(?:"
+    r"\btool\s+(?:did(?:n't| not)\s+return|failed\s+to\s+return|did(?:n't| not)\s+produce)\b"
+    r"|\b(?:technical|local\s+environment|system)\s+(?:issue|issues|problem|problems|fault|failure)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_TOOL_PROTOCOL_LEAK_RE = re.compile(r"<(?:tool_call|function_calls|invoke)\b", re.IGNORECASE)
+_CONFIRMATION_PENDING_RE = re.compile(
+    r"(?:"
+    r"\b(?:waiting|awaiting)\s+(?:for\s+)?confirmation\b"
+    r"|second\s+confirmation\s+is\s+required"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def detect_unsourced_tool_failure(answer: str) -> bool:
+    """Detect failure explanations that imply a tool/runtime fault."""
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    return _TOOL_FAILURE_CLAIM_RE.search(text) is not None
+
+
+def detect_tool_protocol_leak(answer: str) -> bool:
+    """Detect raw tool protocol markers leaking into a user-visible answer."""
+    return _TOOL_PROTOCOL_LEAK_RE.search(str(answer or "")) is not None
+
+
+def detect_confirmation_pending(answer: str) -> bool:
+    """Detect answers that explicitly report execution is blocked on confirmation."""
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    return _CONFIRMATION_PENDING_RE.search(text) is not None
 
 
 # ── Unwritten code detection (compliance check, NOT hallucination) ──────
@@ -172,19 +252,26 @@ def detect_unwritten_code(
 
 # ── Data hallucination detection ─────────────────────────────────────
 
-# Real-time topic keywords in user input that require tool-backed data
+# Real-time topic keywords in user input that require tool-backed data.
+# Includes host/runtime status queries (CPU, memory, disk, temperature, latency).
 _REALTIME_TOPIC_RE = re.compile(
     r"(stock|share\s*price|price|quote|market|market\s*cap|change|earnings|"
     r"revenue|income|profit|p/e|weather|temperature|exchange\s*rate|"
-    r"oil\s*price|gold\s*price|housing\s*price|news|latest|today|current|real\s*time)"
+    r"oil\s*price|gold\s*price|housing\s*price|news|latest|today|current|real\s*time|"
+    r"cpu|memory|ram|disk|storage|load|usage|latency|network|uptime|system\s*status)"
 )
 
-# Specific data patterns in model output that suggest fabricated numbers
+# Specific data patterns in model output that suggest fabricated numbers.
+# Covers finance/news values and local runtime metrics such as GB, ms, cores, and °C.
 _SPECIFIC_DATA_RE = re.compile(
     r"(\d+(?:\.\d+)?(?:\s*(?:billion|million|trillion|thousand|hundred)))"
     r"|(\$\s*\d+(?:\.\d+)?)"
     r"|(\d+(?:\.\d+)?%)"
     r"|(\d+(?:\.\d+)?\s*(?:USD|RMB|CNY|EUR|GBP|JPY))"
+    r"|(\d+(?:\.\d+)?\s*(?:KB|MB|GB|TB|KiB|MiB|GiB|TiB))"
+    r"|(\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds))"
+    r"|(\d+(?:\.\d+)?\s*(?:°C|℃|°F))"
+    r"|(\d+(?:\.\d+)?\s*(?:cores?))"
 )
 
 
@@ -196,7 +283,7 @@ def detect_unsourced_data(
     Returns True if the response likely contains hallucinated data.
     """
     # If any data-fetching tool was used, data may be legitimate
-    if tools_used & {"web_search", "web_fetch", "python_exec"}:
+    if tools_used & {"web_search", "web_fetch", "python_exec", "system_status"}:
         return False
     # Check if user asked about a real-time topic
     if not _REALTIME_TOPIC_RE.search(user_input):
@@ -397,7 +484,7 @@ def detect_answer_degenerate(text: str, *, min_len: int = 30, min_repeats: int =
 _TOOL_CALL_FRAG_RE = re.compile(r"<tool_call>", re.IGNORECASE)
 _REASONING_LEAK_LINE_RE = re.compile(
     r"^\s*(?:let me|i need to|i should|i will|i'll|calling tool|searching|"
-    r"fetching|looking up)",
+    r"continuing)",
     re.IGNORECASE,
 )
 _REASONING_LEAK_KEYWORDS = (
@@ -408,8 +495,7 @@ _REASONING_LEAK_KEYWORDS = (
     "calling tool",
     "i should search",
     "searching for",
-    "fetching details",
-    "looking up",
+    "continuing",
 )
 
 
@@ -488,6 +574,18 @@ def estimate_task_success(
     text = (answer or "").strip()
     if not text:
         return False, "empty_answer"
+
+    if detect_tool_protocol_leak(text):
+        return False, "tool_protocol_leak"
+
+    if detect_progress_placeholder(text):
+        return False, "progress_placeholder"
+
+    if detect_confirmation_pending(text):
+        return False, "confirmation_pending"
+
+    if tool_errors == 0 and detect_unsourced_tool_failure(text):
+        return False, "unsourced_tool_failure"
 
     if (
         tool_errors > 0

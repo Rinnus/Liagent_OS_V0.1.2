@@ -39,16 +39,139 @@ import { loadConfig, loadWeeklyMetrics, sendToolConfirm, sendToolConfirmWithForc
 import { getWs, setWs } from './ws-send.js';
 
 var _connected = false;
+var _confirmationExpiryTimers = new Map();
+var _cancelFinalizeTimer = 0;
+var _CANCEL_NOTE_MIN_VISIBLE_MS = 180;
+
+function setCancelButtonState(state) {
+  var btn = document.getElementById('cancel-btn');
+  if (!btn) return;
+  var normalized = state || 'idle';
+  btn.dataset.state = normalized;
+  btn.classList.toggle('active', normalized === 'active');
+  btn.classList.toggle('pending', normalized === 'pending');
+  btn.disabled = normalized === 'idle' || normalized === 'pending';
+  if (normalized === 'pending') {
+    btn.title = 'Cancelling current task...';
+  } else if (normalized === 'active') {
+    btn.title = 'Cancel current task';
+  } else {
+    btn.title = 'No running task';
+  }
+}
+
+function _clearCancelFinalizeTimer() {
+  if (_cancelFinalizeTimer) {
+    clearTimeout(_cancelFinalizeTimer);
+    _cancelFinalizeTimer = 0;
+  }
+}
+
+function updateCancelNote(text, assistantEl) {
+  var targetEl = assistantEl || getCurrentAssistantEl();
+  if (!targetEl) return null;
+  var body = targetEl.querySelector('.msg-body');
+  if (!body) return null;
+  var note = body.querySelector('.cancel-note');
+  if (!note) {
+    note = document.createElement('div');
+    note.className = 'tool-info clr-muted cancel-note';
+    body.appendChild(note);
+  }
+  note.textContent = text || '';
+  note.dataset.phase = (text === 'Current run cancelled.') ? 'done' : 'pending';
+  if (!note.dataset.shownAt) note.dataset.shownAt = String(Date.now());
+  return note;
+}
+
+function _finalizeCancelState(assistantEl, runId) {
+  var targetEl = assistantEl || getCurrentAssistantEl() || getLastAssistantEl();
+  if (!targetEl) return;
+  updateCancelNote('Current run cancelled.', targetEl);
+  setLastAssistantEl(targetEl, runId || getActiveRunId() || '');
+  if (getCurrentAssistantEl() === targetEl) {
+    setCurrentAssistantEl(null);
+    setCurrentAssistantText('');
+  }
+  scrollBottom();
+}
+
+function _scheduleCancelFinalization(assistantEl, runId) {
+  var targetEl = assistantEl || getCurrentAssistantEl();
+  var note = targetEl ? targetEl.querySelector('.cancel-note') : null;
+  var shownAt = note ? parseInt(note.dataset.shownAt || '0', 10) : 0;
+  var elapsed = shownAt > 0 ? Math.max(0, Date.now() - shownAt) : _CANCEL_NOTE_MIN_VISIBLE_MS;
+  var remaining = Math.max(0, _CANCEL_NOTE_MIN_VISIBLE_MS - elapsed);
+  _clearCancelFinalizeTimer();
+  if (!targetEl || !note || remaining <= 0) {
+    _finalizeCancelState(targetEl, runId);
+    return;
+  }
+  _cancelFinalizeTimer = setTimeout(function() {
+    _cancelFinalizeTimer = 0;
+    _finalizeCancelState(targetEl, runId);
+  }, remaining);
+}
+
+function clearCancelNote() {
+  _clearCancelFinalizeTimer();
+  var assistantEl = getCurrentAssistantEl() || getLastAssistantEl();
+  if (!assistantEl) return;
+  var body = assistantEl.querySelector('.msg-body');
+  if (!body) return;
+  var note = body.querySelector('.cancel-note');
+  if (note) note.remove();
+}
+
+function clearConfirmationExpiryTimer(token) {
+  var key = String(token || '');
+  if (!key) return;
+  var timerId = _confirmationExpiryTimers.get(key);
+  if (timerId) {
+    clearTimeout(timerId);
+    _confirmationExpiryTimers.delete(key);
+  }
+}
+
+function scheduleConfirmationExpiry(token, expiresAt, blockEl, buttons) {
+  var key = String(token || '');
+  var expiryText = String(expiresAt || '');
+  if (!key || !expiryText || !blockEl) return;
+  clearConfirmationExpiryTimer(key);
+  var expiresMs = Date.parse(expiryText);
+  if (!Number.isFinite(expiresMs)) return;
+  var fireExpiry = function() {
+    _confirmationExpiryTimers.delete(key);
+    if (!blockEl || !blockEl.isConnected) return;
+    if (blockEl.dataset.confirmResolved === '1') return;
+    blockEl.dataset.confirmResolved = '1';
+    (buttons || []).forEach(function(btn) {
+      if (btn) btn.disabled = true;
+    });
+    var note = blockEl.querySelector('.confirm-expired');
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'tool-info clr-error confirm-expired';
+      blockEl.appendChild(note);
+    }
+    note.textContent = 'Confirmation expired. Start the action again if you still want to run it.';
+    scrollBottom();
+  };
+  var delayMs = Math.max(0, expiresMs - Date.now());
+  var timerId = setTimeout(fireExpiry, delayMs);
+  _confirmationExpiryTimers.set(key, timerId);
+}
 
 // Exported for coverage validation (C5)
 export var REGISTERED_MESSAGE_TYPES = [
   'vision_input', 'vision_note', 'skill_selected', 'service_tier',
-  'run_state', 'think', 'token', 'tool_start', 'tool_result',
+  'run_state', 'think', 'token', 'tool_start', 'tool_result', 'tool_error', 'tool_fallback', 'tool_skip',
   'llm_usage', 'context_update', 'dispatch', 'sub_complete',
   'synthesis_partial', 'synthesis',
   'policy_review', 'policy_blocked',
   'confirmation_required', 'tool_confirm_result',
   'bridge_tts',
+  'status_message',
   'tts_chunk', 'tts_done', 'tts_profile', 'tts_metrics',
   'consistency_score', 'stt_start', 'stt_result',
   'task_outcome', 'run_metrics', 'proactive_suggestion', 'quality_gate',
@@ -129,12 +252,22 @@ function handleWSMessage(data) {
       var runId = data.run_id || '';
       if (runId) setActiveRunId(runId);
       setRunStatus(data.state || 'idle', getActiveRunId());
+      if (data.state === 'accepted' || data.state === 'queued' || data.state === 'streaming') {
+        if ((document.getElementById('cancel-btn') || {}).dataset.state !== 'pending') {
+          setCancelButtonState('active');
+        }
+      }
       if ((data.state === 'cancelled' || data.state === 'error') && getVoiceMode()) {
         resetTTSState();
         setVoiceState('listening');
         resumeVoiceListening();
       }
+      if (data.state === 'cancelled' && getCurrentAssistantEl()) {
+        _scheduleCancelFinalization(getCurrentAssistantEl(), getActiveRunId() || '');
+      }
       if (data.state === 'done' || data.state === 'error' || data.state === 'cancelled') {
+        setCancelButtonState('idle');
+        if (data.state !== 'cancelled') clearCancelNote();
         setActiveRunId('');
         setActiveServiceTier('');
         setActiveSkillName('');
@@ -191,10 +324,68 @@ function handleWSMessage(data) {
     }
 
     case 'tool_result': {
+      if (!getCurrentAssistantEl()) startAssistantMessage();
       var ti = document.createElement('div');
       ti.className = 'tool-info clr-dim';
-      ti.textContent = data.result.substring(0, 200);
-      getCurrentAssistantEl().querySelector('.msg-body').appendChild(ti);
+      var previewText = String(data.result || '');
+      ti.textContent = previewText.substring(0, 200);
+      var body = getCurrentAssistantEl().querySelector('.msg-body');
+      body.appendChild(ti);
+      if (data.truncated) {
+        var tm = document.createElement('div');
+        tm.className = 'tool-info clr-muted';
+        var totalChars = Number(data.total_chars || 0);
+        tm.textContent = totalChars > 0
+          ? ('tool output preview | showing first 200 chars of ' + totalChars)
+          : 'tool output preview | truncated';
+        body.appendChild(tm);
+        var fullText = String(data.full_result || '');
+        if (fullText) {
+          var details = document.createElement('details');
+          details.className = 'tool-info tool-result-details';
+          var summary = document.createElement('summary');
+          summary.textContent = 'Expand full output';
+          var pre = document.createElement('pre');
+          pre.className = 'tool-result-full';
+          pre.textContent = fullText;
+          details.appendChild(summary);
+          details.appendChild(pre);
+          body.appendChild(details);
+        }
+      }
+      scrollBottom();
+      break;
+    }
+
+    case 'tool_error': {
+      if (!getCurrentAssistantEl()) startAssistantMessage();
+      var terr = document.createElement('div');
+      terr.className = 'tool-info clr-error';
+      var errorType = String(data.error_type || '').trim();
+      terr.textContent = 'tool error: ' + (data.name || '-') +
+        (errorType ? (' [' + errorType + ']') : '') +
+        (data.error ? (' - ' + String(data.error).slice(0, 200)) : '');
+      getCurrentAssistantEl().querySelector('.msg-body').appendChild(terr);
+      scrollBottom();
+      break;
+    }
+
+    case 'tool_fallback': {
+      if (!getCurrentAssistantEl()) startAssistantMessage();
+      var tf = document.createElement('div');
+      tf.className = 'tool-info clr-info';
+      tf.textContent = 'tool fallback: ' + (data.requested_name || '-') + ' -> ' + (data.effective_name || '-');
+      getCurrentAssistantEl().querySelector('.msg-body').appendChild(tf);
+      scrollBottom();
+      break;
+    }
+
+    case 'tool_skip': {
+      if (!getCurrentAssistantEl()) startAssistantMessage();
+      var ts = document.createElement('div');
+      ts.className = 'tool-info clr-muted';
+      ts.textContent = 'tool skipped: ' + (data.name || '-') + ' - ' + (data.reason || 'skipped');
+      getCurrentAssistantEl().querySelector('.msg-body').appendChild(ts);
       scrollBottom();
       break;
     }
@@ -312,6 +503,8 @@ function handleWSMessage(data) {
       if (!getCurrentAssistantEl()) startAssistantMessage();
       var cr = document.createElement('div');
       cr.className = 'tool-info clr-warn';
+      cr.dataset.confirmToken = String(data.token || '');
+      cr.dataset.confirmResolved = '0';
       var brief = parseJSONSafe(data.brief || '', {});
       var stage = brief.stage || 1;
       var requiredStage = brief.required_stage || 1;
@@ -325,8 +518,16 @@ function handleWSMessage(data) {
       var noBtn = document.createElement('button');
       noBtn.className = 'confirm-btn';
       noBtn.textContent = 'reject';
-      yesBtn.onclick = function() { sendToolConfirmWithForce(data.token, true, false, [yesBtn, noBtn]); };
-      noBtn.onclick = function() { sendToolConfirm(data.token, false, [yesBtn, noBtn]); };
+      yesBtn.onclick = function() {
+        cr.dataset.confirmResolved = '1';
+        clearConfirmationExpiryTimer(data.token);
+        sendToolConfirmWithForce(data.token, true, false, [yesBtn, noBtn]);
+      };
+      noBtn.onclick = function() {
+        cr.dataset.confirmResolved = '1';
+        clearConfirmationExpiryTimer(data.token);
+        sendToolConfirm(data.token, false, [yesBtn, noBtn]);
+      };
       actions.appendChild(yesBtn);
       actions.appendChild(noBtn);
       cr.appendChild(actions);
@@ -337,6 +538,7 @@ function handleWSMessage(data) {
         d2.textContent = 'capability: ' + brief.capability;
         cr.appendChild(d2);
       }
+      scheduleConfirmationExpiry(data.token, data.expires_at, cr, [yesBtn, noBtn]);
       getCurrentAssistantEl().querySelector('.msg-body').appendChild(cr);
       scrollBottom();
       break;
@@ -357,15 +559,22 @@ function handleWSMessage(data) {
         var cancelBtn = document.createElement('button');
         cancelBtn.className = 'confirm-btn';
         cancelBtn.textContent = 'reject';
+        tcr.dataset.confirmToken = String(tcResult.token || '');
+        tcr.dataset.confirmResolved = '0';
         finalBtn.onclick = function() {
+          tcr.dataset.confirmResolved = '1';
+          clearConfirmationExpiryTimer(tcResult.token);
           sendToolConfirmWithForce(tcResult.token, true, true, [finalBtn, cancelBtn]);
         };
         cancelBtn.onclick = function() {
+          tcr.dataset.confirmResolved = '1';
+          clearConfirmationExpiryTimer(tcResult.token);
           sendToolConfirmWithForce(tcResult.token, false, false, [finalBtn, cancelBtn]);
         };
         actions2.appendChild(finalBtn);
         actions2.appendChild(cancelBtn);
         tcr.appendChild(actions2);
+        scheduleConfirmationExpiry(tcResult.token, tcResult.expires_at, tcr, [finalBtn, cancelBtn]);
       }
       getCurrentAssistantEl().querySelector('.msg-body').appendChild(tcr);
       scrollBottom();
@@ -487,6 +696,7 @@ function handleWSMessage(data) {
     }
 
     case 'done':
+      clearCancelNote();
       var completedAssistantEl = getCurrentAssistantEl();
       if (completedAssistantEl) {
         getLastTextEl().textContent = getCurrentAssistantText() || data.text;
@@ -543,6 +753,22 @@ function handleWSMessage(data) {
       }
       break;
 
+    case 'status_message': {
+      var statusEl = addMessage('assistant', data.text || '');
+      statusEl.classList.add('assistant-status');
+      var roleEl = statusEl.querySelector('.msg-role');
+      if (roleEl) roleEl.textContent = 'status';
+      var body = statusEl.querySelector('.msg-body');
+      if (body && data.run_state) {
+        var meta = document.createElement('div');
+        meta.className = 'tool-info clr-muted';
+        meta.textContent = 'run state: ' + String(data.run_state || 'streaming');
+        body.appendChild(meta);
+      }
+      scrollBottom();
+      break;
+    }
+
     case 'tts_chunk':
       queueTTSChunk(data.audio, data.sample_rate || 24000);
       if (!getVoiceMode()) {
@@ -559,15 +785,16 @@ function handleWSMessage(data) {
       break;
 
     case 'error': {
+      clearCancelNote();
       var errText = data.text || 'error';
       var isTTSError = errText.indexOf('tts error:') === 0;
       if (getCurrentAssistantEl()) {
         var el = getLastTextEl();
         el.textContent = errText;
         el.classList.add('clr-dim');
-      } else if (!getVoiceMode() && isTTSError) {
-        var ttsErrEl = addMessage('assistant', errText);
-        ttsErrEl.querySelector('.msg-text').classList.add('clr-error');
+      } else if (!getVoiceMode()) {
+        var errEl = addMessage('assistant', errText);
+        errEl.querySelector('.msg-text').classList.add('clr-error');
       }
       setCurrentAssistantEl(null);
       setCurrentAssistantText('');
@@ -603,6 +830,7 @@ function handleWSMessage(data) {
       break;
 
     case 'cleared':
+      clearCancelNote();
       document.getElementById('messages').textContent = '';
       clearRunTimelineAndRender();
       clearChatState();
@@ -616,12 +844,14 @@ function handleWSMessage(data) {
       break;
 
     case 'task_result': {
+      var isSuccess = data.status === 'success';
+      var isPreempted = data.status === 'preempted';
       var taskEl = document.createElement('div');
       taskEl.className = 'msg assistant task-result';
       var av = document.createElement('div');
       av.className = 'msg-avatar';
       av.textContent = 'T';
-      av.style.background = data.status === 'success' ? '#2a7a4b' : '#7a2a2a';
+      av.style.background = isSuccess ? '#2a7a4b' : (isPreempted ? '#9a6a12' : '#7a2a2a');
       var bd = document.createElement('div');
       bd.className = 'msg-body';
       var rl = document.createElement('div');
@@ -630,7 +860,13 @@ function handleWSMessage(data) {
       bd.appendChild(rl);
       var tx = document.createElement('div');
       tx.className = 'msg-text';
-      tx.textContent = data.status === 'success' ? (data.result || '(empty)') : ('Error: ' + (data.error || 'unknown'));
+      if (isSuccess) {
+        tx.textContent = data.result || '(empty)';
+      } else if (isPreempted) {
+        tx.textContent = data.result || 'Preempted by foreground request.';
+      } else {
+        tx.textContent = 'Error: ' + (data.error || 'unknown');
+      }
       bd.appendChild(tx);
       taskEl.appendChild(av);
       taskEl.appendChild(bd);
@@ -708,6 +944,7 @@ function handleWSMessage(data) {
     }
 
     case 'barge_in_ack':
+      setCancelButtonState('idle');
       break;
 
     case 'auth_ok':

@@ -587,6 +587,9 @@ class TriggerManager:
         once_recovered = 0
         once_missed = 0
         for task in once_tasks:
+            if self.store.has_open_run_for_task(task["id"]):
+                _log.event("once_recovery_skipped_existing_run", task_id=task["id"])
+                continue
             fire_at_str = task.get("next_run_at", "")
             if not fire_at_str:
                 config = task.get("trigger_config", {})

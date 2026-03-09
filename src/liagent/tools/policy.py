@@ -23,12 +23,78 @@ _TOOL_PROFILE_MAP: dict[str, set[str] | None] = {
     # Read-mostly research tools.
     "research": {"web_search", "web_fetch", "read_file", "list_dir", "describe_image",
                   "create_task", "delete_task", "delete_all_tasks", "list_tasks",
-                  "run_tests", "lint_code", "verify_syntax",
+                  "run_tests", "lint_code", "verify_syntax", "system_status",
                   "shell_exec",
                   "browser_navigate", "browser_screenshot", "browser_extract"},
     # All registered tools are allowed (still subject to risk/confirmation rules).
     "full": None,
 }
+
+
+def _run_tests_requires_host_confirmation(args: dict) -> bool:
+    """Return True when run_tests would execute directly on the host."""
+    try:
+        from .sandbox_runtime import routes_tool_in_sandbox
+
+        delegated = bool((args or {}).get("_delegated", False))
+        return not routes_tool_in_sandbox("run_tests", delegated=delegated)
+    except Exception:
+        # Fail closed: if sandbox routing cannot be determined, require confirmation.
+        return True
+
+
+def _python_exec_requires_host_confirmation(args: dict) -> bool:
+    """Return True when python_exec would execute directly on the host."""
+    try:
+        from .sandbox_runtime import routes_tool_in_sandbox
+
+        delegated = bool((args or {}).get("_delegated", False))
+        return not routes_tool_in_sandbox("python_exec", delegated=delegated)
+    except Exception:
+        return True
+
+
+def _stateful_repl_requires_trusted_confirmation() -> bool:
+    """Return True when stateful_repl is running in trusted_local mode."""
+    try:
+        from .stateful_repl import get_repl_mode
+
+        return get_repl_mode() == "trusted_local"
+    except Exception:
+        return True
+
+
+def tool_supports_session_grant(tool_name: str, args: dict | None = None) -> bool:
+    """Return whether *tool_name* should receive a reusable session grant."""
+    if tool_name == "write_file":
+        return False
+    if tool_name == "run_tests":
+        return not _run_tests_requires_host_confirmation(args or {})
+    if tool_name == "python_exec":
+        return not _python_exec_requires_host_confirmation(args or {})
+    if tool_name == "stateful_repl":
+        return not _stateful_repl_requires_trusted_confirmation()
+    return True
+
+
+def should_create_session_grant(
+    tool_name: str,
+    *,
+    auth_mode: str = "",
+    args: dict | None = None,
+    tool_def: ToolDef | None = None,
+    grantable_tools: set[str] | None = None,
+) -> bool:
+    """Return whether a confirmed execution should mint a reusable session grant."""
+    if auth_mode != "confirmed":
+        return False
+    if tool_def is not None and tool_def.risk_level == "high":
+        return False
+    if not tool_supports_session_grant(tool_name, args):
+        return False
+    if grantable_tools is not None and tool_name not in grantable_tools:
+        return False
+    return True
 
 
 class ToolPolicy:
@@ -177,6 +243,15 @@ class ToolPolicy:
 
         if cap.filesystem_access and not self.allow_filesystem_tools:
             return False, "filesystem tools are blocked by policy"
+
+        if tool_def.name == "run_tests" and _run_tests_requires_host_confirmation(args) and not confirmed:
+            return False, "confirmation required for host_execution=run_tests"
+
+        if tool_def.name == "python_exec" and _python_exec_requires_host_confirmation(args) and not confirmed:
+            return False, "confirmation required for host_execution=python_exec"
+
+        if tool_def.name == "stateful_repl" and _stateful_repl_requires_trusted_confirmation() and not confirmed:
+            return False, "confirmation required for repl_mode=trusted_local"
 
         # Risk/presence/confirm_tools gates: confirmed OR granted bypasses
         if cap.requires_user_presence and not auth:

@@ -11,8 +11,15 @@ from typing import Any, TypeAlias
 from ..tools import get_tool
 from ..tools.policy import ToolPolicy
 from ..logging import get_logger
-from .quality import estimate_task_success, detect_hallucinated_action
+from .quality import (
+    detect_hallucinated_action,
+    detect_progress_placeholder,
+    detect_tool_protocol_leak,
+    detect_unsourced_tool_failure,
+    estimate_task_success,
+)
 from .self_supervision import InteractionMetrics
+from .tool_result_fallback import format_tool_result_fallback
 from .tool_executor import ToolExecutor, build_tool_degrade_observation
 from .tool_exchange import append_tool_exchange
 
@@ -21,6 +28,21 @@ _log = get_logger("confirmation")
 # Regex patterns for confirmation commands
 _CONFIRM_RE = re.compile(r"^/confirm\s+([A-Za-z0-9_-]+)(?:\s+(--force|force))?\s*$")
 _REJECT_RE = re.compile(r"^/reject\s+([A-Za-z0-9_-]+)\s*$")
+
+
+def _needs_confirmation_tool_fallback(answer: str, *, execution_ok: bool) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return True
+    if detect_tool_protocol_leak(text):
+        return True
+    if detect_progress_placeholder(text):
+        return True
+    if not execution_ok and len(text) < 12:
+        return True
+    if execution_ok and detect_unsourced_tool_failure(text):
+        return True
+    return False
 
 
 def parse_confirmation_command(user_input: str) -> tuple[str, str, bool] | None:
@@ -52,6 +74,13 @@ def cleanup_pending_confirmations(
     ]
     for token in stale:
         pending.pop(token, None)
+
+
+def _confirmation_expires_at(payload: dict[str, Any], ttl: timedelta) -> str:
+    created_at = payload.get("created_at")
+    if not isinstance(created_at, datetime):
+        return ""
+    return (created_at + ttl).isoformat()
 
 
 async def resolve_confirmation(
@@ -134,6 +163,7 @@ async def resolve_confirmation(
                 "token": token,
                 "message": f"Second confirmation is required. Run `/confirm {token} --force`.",
                 "brief": brief,
+                "expires_at": _confirmation_expires_at(payload, confirm_ttl),
             }
 
     pending_confirmations.pop(token, None)
@@ -164,6 +194,15 @@ async def resolve_confirmation(
              "Do not call tools again. Answer directly from available information.",
     )
     answer, qmeta = await final_answer_fn()
+    if _needs_confirmation_tool_fallback(answer, execution_ok=not is_err):
+        answer, qmeta = format_tool_result_fallback(
+            tool_name=tool_name,
+            observation=observation,
+            tool_args=tool_args,
+            execution_ok=not is_err,
+            confirmed=True,
+            reason="confirmation",
+        )
     result = {
         "status": "ok",
         "tool_name": tool_name,
@@ -224,16 +263,20 @@ def build_confirmation_run_events(
     if status == "ok":
         q = result.get("quality", {}) or {}
         issues = q.get("issues", []) if isinstance(q, dict) else []
-        task_success, task_reason = estimate_task_success(
-            answer=result.get("answer", ""),
-            tool_calls=1, tool_errors=0, policy_blocked=0,
-            plan_total_steps=0, plan_completed_steps=0,
-            detect_hallucinated_action_fn=detect_hallucinated_action,
-        )
+        tool_errors = 0 if result.get("execution_ok", True) else 1
+        if tool_errors > 0:
+            task_success, task_reason = False, "tool_error"
+        else:
+            task_success, task_reason = estimate_task_success(
+                answer=result.get("answer", ""),
+                tool_calls=1, tool_errors=tool_errors, policy_blocked=0,
+                plan_total_steps=0, plan_completed_steps=0,
+                detect_hallucinated_action_fn=detect_hallucinated_action,
+            )
         metrics.log_turn(
             session_id=session_id,
             latency_ms=(time.perf_counter() - start_ts) * 1000.0,
-            tool_calls=1, tool_errors=0, policy_blocked=0,
+            tool_calls=1, tool_errors=tool_errors, policy_blocked=0,
             task_success=task_success, answer_revision_count=len(issues),
             quality_issues=",".join(issues), plan_completion_ratio=1.0,
             answer_chars=len(result.get("answer", "")),

@@ -14,6 +14,9 @@ from .quality import (
     detect_copout,
     detect_degenerate_output,
     detect_hallucinated_action,
+    detect_progress_placeholder,
+    detect_tool_protocol_leak,
+    detect_unsourced_tool_failure,
     detect_ungrounded_numbers,
     detect_unsourced_data,
     detect_unwritten_code,
@@ -24,6 +27,17 @@ from .text_utils import clean_output
 from .tool_parsing import contains_tool_call_syntax, strip_any_tool_call
 
 _log = get_logger("response_guard")
+_RESIDUAL_TOOL_PROTOCOL_RE = re.compile(r"<(?:tool_call|function_calls|invoke)\b.*", re.DOTALL | re.IGNORECASE)
+
+_RETRY_STATUS_TEXT = {
+    "progress_placeholder": "The previous reply only described process and did not contain actual results. Retrying from the real execution state.",
+    "hallucinated_tool_failure": "The previous reply described a tool failure that was not observed. Retrying from the real execution state.",
+    "copout": "The previous reply was not specific or reliable enough. Retrying with a different approach.",
+    "hallucination": "The previous reply claimed completion without the required execution. Completing the missing execution and retrying.",
+    "unsourced_data": "The previous reply cited unverified data. Fetching real data before retrying.",
+    "ungrounded_numbers": "The previous reply included numbers that do not match the tool outputs. Rechecking the raw results before retrying.",
+    "unwritten_code": "The previous reply described code changes, but no file write happened. Writing the file before retrying.",
+}
 
 
 @dataclass
@@ -45,6 +59,11 @@ class GuardResult:
     # experience_guard_tool
     guard_tool_name: str = ""
     guard_tool_args: dict = field(default_factory=dict)
+
+
+def describe_retry_reason(reason: str) -> str:
+    key = str(reason or "").strip()
+    return _RETRY_STATUS_TEXT.get(key, "The previous reply was not stable enough. Retrying once.")
 
 
 async def check_response(
@@ -118,7 +137,7 @@ async def check_response(
     # 2. Degenerate output
     if detect_degenerate_output(full_response):
         stripped = strip_any_tool_call(full_response)
-        stripped = re.sub(r"<tool_call>.*", "", stripped, flags=re.DOTALL).strip()
+        stripped = _RESIDUAL_TOOL_PROTOCOL_RE.sub("", stripped).strip()
         if stripped and len(stripped) > 10:
             answer = clean_output(stripped)
             answer, qmeta = quality_fix(answer)
@@ -149,7 +168,7 @@ async def check_response(
     cleaned_response = full_response
     if contains_tool_call_syntax(cleaned_response):
         cleaned_response = strip_any_tool_call(cleaned_response)
-        cleaned_response = re.sub(r"<tool_call>.*", "", cleaned_response, flags=re.DOTALL).strip()
+        cleaned_response = _RESIDUAL_TOOL_PROTOCOL_RE.sub("", cleaned_response).strip()
 
     answer = clean_output(cleaned_response)
     answer, qmeta = quality_fix(answer)
@@ -157,8 +176,54 @@ async def check_response(
     _log.trace("response_guard",
                action="quality_check", step=step,
                copout=detect_copout(answer),
+               progress_placeholder=detect_progress_placeholder(answer),
+               tool_failure_claim=detect_unsourced_tool_failure(answer),
+               tool_protocol_leak=detect_tool_protocol_leak(answer),
                hallucination=detect_hallucinated_action(answer, ctx.tools_used) or "",
                unwritten_code=detect_unwritten_code(answer, ctx.user_input, ctx.tools_used)[0])
+
+    # 3.5. Progress placeholder retry
+    if (
+        detect_progress_placeholder(answer)
+        and not ctx.progress_placeholder_retried
+        and step < ctx.max_steps - 1
+        and not ctx.retry_budget_exhausted
+    ):
+        ctx.progress_placeholder_retried = True
+        _log.trace("response_guard", action="retry", type="progress_placeholder")
+        return GuardResult(
+            action="retry",
+            retry_reason="progress_placeholder",
+            retry_injection=(
+                "Do not answer with progress chatter such as 'let me check'. "
+                "If you need a tool, emit only the tool call. If execution is blocked on confirmation, "
+                "state that you are waiting for confirmation and do not pretend the work is still running."
+            ),
+            answer=answer,
+        )
+
+    # 3.6. Tool-failure hallucination retry
+    if (
+        detect_unsourced_tool_failure(answer)
+        and ctx.tool_errors == 0
+        and not ctx.hallucination_retried
+        and step < ctx.max_steps - 1
+        and not ctx.retry_budget_exhausted
+    ):
+        ctx.hallucination_retried = True
+        ctx.quality_issues.append("hallucinated_tool_failure")
+        ctx.revision_count += 1
+        _log.trace("response_guard", action="retry", type="hallucinated_tool_failure")
+        return GuardResult(
+            action="retry",
+            retry_reason="hallucinated_tool_failure",
+            retry_injection=(
+                "Do not claim that a tool failed, timed out, or returned no result unless you actually observed a tool error. "
+                "If no tool ran yet, emit the correct tool call only. "
+                "If execution is blocked on confirmation, state that explicitly instead of inventing a technical issue."
+            ),
+            answer=answer,
+        )
 
     # 4. Copout retry
     if detect_copout(answer) and ctx.tool_calls > 0 and not ctx.copout_retried and step < ctx.max_steps - 1 and not ctx.retry_budget_exhausted:
@@ -214,7 +279,7 @@ async def check_response(
 
     # 6.2. Ungrounded numbers — answer cites numbers not found in tool observations
     if (
-        ctx.tools_used & {"web_search", "web_fetch", "stock"}
+        ctx.tools_used & {"web_search", "web_fetch", "stock", "system_status"}
         and ctx.tool_calls > 0
         and not ctx.ungrounded_retried
         and step < ctx.max_steps - 1

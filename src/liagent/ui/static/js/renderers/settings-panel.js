@@ -15,9 +15,10 @@ import { withAuth, authHeaders } from '../utils/auth.js';
 import { getWs } from '../ws-send.js';
 import { clearRunTimeline } from '../stores/run-store.js';
 import { clearRunTimelineAndRender } from './run-panel.js';
-import { addMessage } from './message-panel.js';
+import { addMessage, scrollBottom, startAssistantMessage } from './message-panel.js';
 import {
   clearChatState,
+  getCurrentAssistantEl,
   getWebSessionKey,
   rotateWebSessionKey,
   setLastUserQuery,
@@ -1133,4 +1134,35 @@ export function sendMessage() {
   ws.send(JSON.stringify(payload));
   input.value = '';
   input.style.height = 'auto';
+}
+
+export function cancelCurrentRun() {
+  var ws = getWs();
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  var btn = document.getElementById('cancel-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.remove('active');
+    btn.classList.add('pending');
+    btn.dataset.state = 'pending';
+    btn.title = 'Cancelling current task...';
+  }
+  var currentEl = getCurrentAssistantEl();
+  if (!currentEl) {
+    startAssistantMessage();
+    currentEl = getCurrentAssistantEl();
+  }
+  if (currentEl) {
+    var body = currentEl.querySelector('.msg-body');
+    if (body && !body.querySelector('.cancel-note')) {
+      var note = document.createElement('div');
+      note.className = 'tool-info clr-muted cancel-note';
+      note.textContent = 'Cancelling the current run...';
+      note.dataset.shownAt = String(Date.now());
+      note.dataset.phase = 'pending';
+      body.appendChild(note);
+      scrollBottom();
+    }
+  }
+  ws.send(JSON.stringify({ type: 'barge_in' }));
 }

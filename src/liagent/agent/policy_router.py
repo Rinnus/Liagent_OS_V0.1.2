@@ -19,19 +19,18 @@ _log = get_logger("policy_router")
 # ── Fast-path regex patterns ──────────────────────────────────────────
 
 _GREETING_RE = re.compile(
-    r"^(hi|hello|hey|good\s*(?:morning|evening|afternoon))"
-    r"[!.]?\s*$",
+    r"^(hi|hello|hey|good\s*(?:morning|evening|afternoon))[!.]?\s*$",
     re.IGNORECASE,
 )
 
 _META_REFLECTIVE_RE = re.compile(
-    r"what do you think|do you agree|is that right|can you redo"
-    r"|that seems wrong|please answer again|try again",
+    r"what do you think"
+    r"|do you agree|is that right|can you redo",
     re.IGNORECASE,
 )
 
 _FOLLOWUP_ANAPHORA_RE = re.compile(
-    r"^(and |also |what about |how about |then |next |another )",
+    r"^(and |also |what about |how about |then )",
     re.IGNORECASE,
 )
 
@@ -57,7 +56,7 @@ _PRIVATE_RE = re.compile(
 _RESEARCH_SIGNAL_RE = re.compile(
     r"compare|contrast|analyze|analysis|research|investigate"
     r"|summarize|earnings|revenue|market|industry|trend|outlook|report"
-    r"|benchmark|review|evaluate",
+    r"|benchmark|deep dive",
     re.IGNORECASE,
 )
 
@@ -68,7 +67,7 @@ _DEEP_RESEARCH_RE = re.compile(
 )
 
 _LOOKUP_SIGNAL_RE = re.compile(
-    r"(?:price|stock\s+price|current\s+price|latest|today|quote)"
+    r"(?:price|stock\s+price|current\s+price|latest)"
     r"(?!\s*(?:trend|compare|analy))",
     re.IGNORECASE,
 )
@@ -78,11 +77,11 @@ _ENTITY_SPLIT_RE = re.compile(r"[,;]|\s+(?:and|vs\.?|versus)\s+")
 _ENTITY_STOPWORDS = frozenset({
     "the", "a", "an", "is", "are", "of", "and", "in", "to", "for",
     "what", "how", "why", "when", "where", "which", "who",
-    "compare", "contrast", "analyze", "find", "search", "show", "tell",
+    "compare", "contrast", "analyze", "search", "find", "tell", "show",
 })
 
 _ENTITY_ACTION_RE = re.compile(
-    r"^(compare|contrast|analyze|find|search|tell\s+me|show\s+me|look\s+up)$",
+    r"^(?:tell\s+me|show\s+me|find|search|look\s+up|compare|contrast|analyze)$",
     re.IGNORECASE,
 )
 

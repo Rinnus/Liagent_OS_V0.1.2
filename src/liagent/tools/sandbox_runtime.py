@@ -86,6 +86,11 @@ def _should_route(tool_name: str, *, delegated: bool) -> bool:
     return False
 
 
+def routes_tool_in_sandbox(tool_name: str, *, delegated: bool = False) -> bool:
+    """Return True when *tool_name* would execute inside the Docker sandbox."""
+    return _should_route(tool_name, delegated=delegated)
+
+
 def _workspace_path() -> Path:
     raw = str(_STATE.workspace_mount or "").strip() or str(Path.home() / "Desktop" / "cwork")
     return Path(raw).expanduser().resolve()
@@ -198,4 +203,3 @@ async def maybe_execute_in_sandbox(
         _log.warning("sandbox_exec_failed", tool=tool_name, code=proc.returncode, error=msg[:300])
         return SandboxAttempt(used=False, error=msg)
     return SandboxAttempt(used=True, output=(out or "").strip())
-

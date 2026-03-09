@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from .memory import DB_PATH, ConversationMemory, LongTermMemory
+from .run_control import RunCancellationScope
 from ..logging import get_logger
 from .time_utils import _now_local, _now_local_iso
 
@@ -309,6 +310,38 @@ class TaskStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_run(self, run_id: str) -> dict | None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM autonomous_task_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def has_open_run_for_task(
+        self,
+        task_id: str,
+        *,
+        statuses: tuple[str, ...] = ("pending", "confirmed", "pending_confirm", "running"),
+        exclude_run_id: str | None = None,
+    ) -> bool:
+        if not statuses:
+            return False
+        placeholders = ",".join("?" for _ in statuses)
+        params: list[Any] = [task_id, *statuses]
+        query = (
+            f"SELECT 1 FROM autonomous_task_runs "
+            f"WHERE task_id = ? AND status IN ({placeholders})"
+        )
+        if exclude_run_id:
+            query += " AND id != ?"
+            params.append(exclude_run_id)
+        query += " LIMIT 1"
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(query, params).fetchone()
+        return row is not None
+
     def get_recoverable_runs(self, *, statuses: tuple[str, ...] = ("pending", "confirmed")) -> list[dict]:
         """Return runs that should be re-enqueued after a process restart."""
         if not statuses:
@@ -442,7 +475,10 @@ class TaskExecutor:
         self._current_task: asyncio.Task | None = None
         self._current_run_id: str | None = None
         self._current_task_id: str | None = None
+        self._current_item: _QueueItem | None = None
+        self._current_cancel_scope: RunCancellationScope | None = None
         self._consumer_task: asyncio.Task | None = None
+        self._deferred_replays: list[_QueueItem] = []
         self._task_swap_lock = asyncio.Lock()
         self._stopped = False
 
@@ -493,6 +529,8 @@ class TaskExecutor:
     async def stop(self):
         """Stop the consumer loop and cancel any running task."""
         self._stopped = True
+        if self._current_cancel_scope is not None:
+            self._current_cancel_scope.cancel("shutdown")
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
         if self._consumer_task and not self._consumer_task.done():
@@ -521,24 +559,118 @@ class TaskExecutor:
         self._queue.put_nowait(item)
         _log.event("task_enqueued", run_id=run_id, task_id=task_id, priority=priority)
 
+    def _origin_for_item(self, item: _QueueItem) -> str:
+        if item.goal_id:
+            return "goal"
+        if item.source != "user_manual":
+            return "system"
+        return "user"
+
+    def _build_replay_item(self, item: _QueueItem, *, run_id: str) -> _QueueItem:
+        return _QueueItem(
+            priority=item.priority,
+            run_id=run_id,
+            task_id=item.task_id,
+            prompt=item.prompt,
+            trigger_event=item.trigger_event,
+            budget=item.budget,
+            goal_id=item.goal_id,
+            source=item.source,
+        )
+
+    def _schedule_preempt_replay(self, item: _QueueItem) -> _QueueItem | None:
+        task_meta = self.store.get_task(item.task_id)
+        if not task_meta or task_meta.get("status") != "active":
+            return None
+        if str(task_meta.get("trigger_type") or "") != "once":
+            return None
+        if self.store.has_open_run_for_task(item.task_id, exclude_run_id=item.run_id):
+            return None
+        replacement = self.store.create_run(
+            item.task_id,
+            trigger_event=item.trigger_event,
+            prompt=item.prompt,
+        )
+        self.store.update_run(
+            replacement["id"],
+            origin=self._origin_for_item(item),
+            goal_id=item.goal_id,
+        )
+        replay_item = self._build_replay_item(item, run_id=replacement["id"])
+        self._deferred_replays.append(replay_item)
+        _log.event("task_preempt_replay_scheduled", run_id=item.run_id, replay_run_id=replacement["id"])
+        return replay_item
+
+    async def resume_deferred_runs(self) -> int:
+        if not self._deferred_replays:
+            return 0
+        pending = list(self._deferred_replays)
+        self._deferred_replays.clear()
+        resumed = 0
+        for item in pending:
+            task_meta = self.store.get_task(item.task_id)
+            run_meta = self.store.get_run(item.run_id)
+            if not task_meta or task_meta.get("status") != "active":
+                continue
+            if not run_meta or run_meta.get("status") not in {"pending", "confirmed"}:
+                continue
+            self.enqueue(
+                item.run_id,
+                item.task_id,
+                item.prompt,
+                priority=item.priority,
+                trigger_event=item.trigger_event,
+                budget=item.budget,
+                goal_id=item.goal_id,
+                source=item.source,
+            )
+            resumed += 1
+        if resumed:
+            _log.event("deferred_runs_resumed", count=resumed)
+        return resumed
+
     async def preempt(self):
         """Cancel the currently running background task for user preemption.
 
-        The run is marked as 'preempted' (not pending/error).
-        For once tasks, a new run is scheduled after the user interaction completes.
-        For cron tasks, the next scheduled trigger will create a new run.
+        The current run is marked as 'preempted' and surfaced as such to listeners.
         """
         if self._current_task and not self._current_task.done():
             run_id = self._current_run_id
             task_id = self._current_task_id
             _log.event("task_preempting", run_id=run_id)
+            if self._current_cancel_scope is not None:
+                self._current_cancel_scope.cancel("user_preempted")
             self._current_task.cancel()
             try:
                 await asyncio.wait_for(self._current_task, timeout=3.0)
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
             if run_id:
-                self.store.update_run(run_id, status="preempted")
+                finished = _now_local_iso()
+                transitioned = self.store.transition_run(
+                    run_id,
+                    "running",
+                    "preempted",
+                    error="preempted_by_foreground_request",
+                    finished_at=finished,
+                )
+                if transitioned and self._current_item is not None:
+                    self._schedule_preempt_replay(self._current_item)
+                if transitioned and self.on_result:
+                    try:
+                        task = self.store.get_task(task_id) if task_id else None
+                        await self.on_result({
+                            "type": "task_result",
+                            "task_id": task_id or "",
+                            "task_name": task["name"] if task else "",
+                            "run_id": run_id,
+                            "status": "preempted",
+                            "result": "Preempted by foreground request.",
+                            "error": "preempted_by_foreground_request",
+                            "finished_at": finished,
+                        })
+                    except Exception as e:
+                        _log.error("task_executor", e, action=f"broadcast_preempted={run_id}")
 
     async def _consumer_loop(self):
         """Background loop that dequeues and executes task runs."""
@@ -552,8 +684,10 @@ class TaskExecutor:
 
             self._current_run_id = item.run_id
             self._current_task_id = item.task_id
+            self._current_item = item
+            self._current_cancel_scope = RunCancellationScope()
             self._current_task = asyncio.create_task(
-                self._execute_run(item)
+                self._execute_run(item, cancel_scope=self._current_cancel_scope)
             )
             try:
                 await self._current_task
@@ -565,8 +699,10 @@ class TaskExecutor:
                 self._current_task = None
                 self._current_run_id = None
                 self._current_task_id = None
+                self._current_item = None
+                self._current_cancel_scope = None
 
-    async def _execute_run(self, item: _QueueItem):
+    async def _execute_run(self, item: _QueueItem, *, cancel_scope: RunCancellationScope | None = None):
         """Execute a single task run with isolated memory."""
         run_id = item.run_id
         task_id = item.task_id
@@ -593,6 +729,7 @@ class TaskExecutor:
                         item.prompt, budget=item.budget,
                         execution_origin=_origin,
                         goal_id=item.goal_id,
+                        cancel_scope=cancel_scope,
                     ):
                         etype = event[0]
                         if etype == "token":

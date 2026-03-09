@@ -29,7 +29,7 @@ TOOL_DOMAIN_MAP: dict[str, str] = {
 # Stock ticker regex: uppercase 1-5 letters, context-gated
 _TICKER_RE = re.compile(r'\b([A-Z]{1,5})\b')
 _TICKER_CONTEXT = re.compile(
-    r'(?:price|stock|ticker|quote|shares|market|buy|sell|gain|drop|trade)',
+    r'(?:price|stock|ticker|quote|shares|market|buy|sell|bullish|bearish|equity)',
     re.IGNORECASE,
 )
 _TICKER_STOPWORDS = {
